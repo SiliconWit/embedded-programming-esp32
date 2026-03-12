@@ -1,0 +1,164 @@
+---
+title: "Embedded Programming: ESP32"
+description: "Program the ESP32 with ESP-IDF for Wi-Fi, Bluetooth Low Energy, MQTT, OTA updates, and low-power IoT applications. Nine lessons, nine connected projects, from an RGB mood lamp to a complete two-node sensor network."
+pubDate: 2026-03-28
+tags: ["embedded-systems", "esp32", "esp-idf", "wifi", "bluetooth", "ble", "mqtt", "iot", "ota", "deep-sleep", "c-programming", "freertos"]
+excerpt: "Master ESP32 programming with ESP-IDF. Build connected IoT projects across nine lessons: Wi-Fi, BLE, MQTT, HTTP servers, OTA updates, secure boot, and deep sleep power management. Culminates in a complete two-node wireless sensor network."
+heroImage: "https://cdn.siliconwit.com/education/pcb-design-kicad/pcb-design-kicad.png"
+---
+
+import Copyright from '../../../../components/Copyright.astro';
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import { Card, CardGrid, Badge, Steps } from '@astrojs/starlight/components';
+
+The ESP32 brings Wi-Fi and Bluetooth to embedded systems for under $5. This course teaches you to build connected devices using ESP-IDF (the official framework), not Arduino wrappers. Each lesson produces a working networked project, progressing from local peripherals to cloud-connected IoT nodes with OTA updates and battery optimization. #ESP32 #IoT #EmbeddedSystems
+
+## Why ESP-IDF?
+
+<CardGrid>
+  <Card title="The Official Framework" icon="open-book">
+    ESP-IDF is what Espressif uses internally. It gives you full access to Wi-Fi, BLE, OTA, secure boot, partition tables, and the dual-core FreeRTOS scheduler. Arduino-ESP32 is a wrapper around ESP-IDF with limitations.
+  </Card>
+
+  <Card title="Production-Grade IoT" icon="approve-check">
+    OTA firmware updates, flash encryption, secure boot v2, and partition management. These are not optional extras; they are what separates a prototype from a product. Lessons 7 and 8 cover them in depth.
+  </Card>
+
+  <Card title="Wi-Fi + BLE + FreeRTOS" icon="setting">
+    Dual-core with FreeRTOS SMP, full Wi-Fi stack (STA/AP/mesh), BLE 4.2/5.0, and MQTT/HTTP client libraries. All running concurrently. The ESP32 is a complete IoT platform on a single chip.
+  </Card>
+
+  <Card title="Connects to Everything" icon="rocket">
+    MQTT brokers, REST APIs, phone apps via BLE, web dashboards. Each lesson connects the ESP32 to something new. By the capstone, you have a complete sensor network.
+  </Card>
+</CardGrid>
+
+## Course Structure
+
+Each lesson follows a consistent cycle:
+
+<Steps>
+1. **The Connected Problem**
+   A real IoT scenario. Not "connect to Wi-Fi" but "build a browser-controlled thermostat."
+
+2. **ESP-IDF Internals**
+   How the relevant subsystem works: event loops, task model, protocol stack, partition layout.
+
+3. **Implementation**
+   Write firmware in C using ESP-IDF APIs. Configure with menuconfig. Handle errors, edge cases, and reconnections.
+
+4. **Build, Flash, and Connect**
+   Flash via USB, connect to the network, and verify with real clients (browser, phone, MQTT explorer).
+
+5. **Hardening**
+   Error recovery, watchdog supervision, and connection resilience patterns you need for real deployments.
+</Steps>
+
+## Lessons
+
+<CardGrid>
+  <Card title="Lesson 1: ESP-IDF Toolchain and Dual-Core Architecture" icon="star">
+    [ESP-IDF Toolchain and Dual-Core Architecture](./esp-idf-toolchain-dual-core). Install ESP-IDF, understand menuconfig, partition tables, and the dual-core FreeRTOS model. Build an RGB mood lamp where one core runs color animations and the other handles serial commands.
+    **Build:** RGB mood lamp. **Parts:** ESP32 DevKitC, RGB LED (common cathode), resistors.
+  </Card>
+
+  <Card title="Lesson 2: GPIO, Peripherals, and Driver Framework" icon="document">
+    [GPIO, Peripherals, and Driver Framework](./gpio-peripherals-driver-framework). Explore the GPIO matrix, LEDC PWM controller, pulse counter (PCNT), and RMT peripheral. Build a capacitive touch lamp dimmer using the ESP32's built-in touch pins.
+    **Build:** Capacitive touch lamp dimmer. **Parts:** Bright LED or small LED strip.
+  </Card>
+
+  <Card title="Lesson 3: Wi-Fi and Network Configuration" icon="document">
+    [Wi-Fi and Network Configuration](./wifi-network-configuration). Master the Wi-Fi driver: STA/AP/STA+AP modes, event model, SmartConfig provisioning, and scan capabilities. Build a Wi-Fi signal mapper that scans nearby access points and serves results as a webpage.
+    **Build:** Wi-Fi signal mapper. **Parts:** No new parts.
+  </Card>
+
+  <Card title="Lesson 4: HTTP Server and REST API" icon="document">
+    [HTTP Server and REST API](./http-server-rest-api). Build an HTTP server with RESTful endpoints, JSON parsing, mDNS discovery, and a responsive web UI served from SPIFFS. Build a browser-controlled thermostat with real sensor input.
+    **Build:** Browser-controlled thermostat. **Parts:** DHT22 temperature/humidity sensor, relay module.
+  </Card>
+
+  <Card title="Lesson 5: MQTT and Cloud Communication" icon="document">
+    [MQTT and Cloud Communication](./mqtt-cloud-communication). Implement MQTT with QoS levels, TLS encryption, persistent sessions, and last will messages. Build a plant soil moisture monitor that sends alerts to your phone via a free MQTT broker.
+    **Build:** Soil moisture monitor with alerts. **Parts:** Capacitive soil moisture sensor.
+  </Card>
+
+  <Card title="Lesson 6: Bluetooth Low Energy (BLE)" icon="document">
+    [Bluetooth Low Energy](./bluetooth-low-energy-ble). Implement GAP and GATT: advertising, scanning, services, characteristics, notifications. Handle BLE and Wi-Fi coexistence. Build a BLE environmental beacon that any phone can read.
+    **Build:** BLE environmental beacon. **Parts:** Reuse DHT22.
+  </Card>
+
+  <Card title="Lesson 7: OTA Updates and Secure Boot" icon="document">
+    [OTA Updates and Secure Boot](./ota-updates-secure-boot). Configure OTA partition schemes, implement firmware rollback, enable flash encryption and secure boot v2, and sign firmware images. Build a remotely updateable sensor node.
+    **Build:** OTA-updateable sensor node. **Parts:** Reuse existing.
+  </Card>
+
+  <Card title="Lesson 8: Power Management and Deep Sleep" icon="document">
+    [Power Management and Deep Sleep](./power-management-deep-sleep). Master deep sleep modes, ULP coprocessor programming, RTC memory persistence, and multiple wake sources. Build a solar-ready weather node optimized for months of battery life.
+    **Build:** Solar-ready weather node. **Parts:** 2xAA battery holder.
+  </Card>
+
+  <Card title="Lesson 9: Capstone: Connected Sensor Network" icon="document">
+    [Connected Sensor Network Project](./connected-sensor-network-project). Combine everything: build a two-node system with an outdoor sensor (battery, deep sleep, MQTT publish) and an indoor display (OLED, always-on, MQTT subscribe). A complete IoT deployment.
+    **Build:** Two-node sensor network. **Parts:** SSD1306 OLED (or reuse from prior courses).
+  </Card>
+</CardGrid>
+
+## Parts Kit
+
+| Part | Quantity | First Used | Approximate Cost |
+|------|----------|------------|-----------------|
+| ESP32 DevKitC | 1-2 | Lesson 1 | $4-6 each |
+| RGB LED (common cathode) + resistors | 1 | Lesson 1 | $0.50 |
+| Bright LED or small LED strip | 1 | Lesson 2 | $1-2 |
+| DHT22 temperature/humidity sensor | 1 | Lesson 4 | $2-3 |
+| Relay module (5V, 1-channel) | 1 | Lesson 4 | $1 |
+| Capacitive soil moisture sensor | 1 | Lesson 5 | $1-2 |
+| 2xAA battery holder | 1 | Lesson 8 | $0.50 |
+| SSD1306 OLED display | 1 | Lesson 9 | $3-4 |
+
+**Total estimated cost: $18-28** (with two ESP32 DevKitC boards for the capstone)
+
+## Skill Progression
+
+| Skill | Lessons 1-3 | Lessons 4-6 | Lessons 7-9 |
+|-------|------------|------------|------------|
+| **Connectivity** | GPIO, touch, Wi-Fi scan/connect | HTTP server, MQTT, BLE | OTA, deep sleep + wake, mesh |
+| **Protocols** | FreeRTOS SMP, event loops | REST, MQTT QoS, GATT | TLS, secure boot, flash encryption |
+| **Power** | Always-on | Wi-Fi power save | Deep sleep, ULP, battery budgeting |
+| **Production** | menuconfig, partitions | Error recovery, reconnection | OTA rollback, firmware signing |
+
+## Prerequisites
+
+<Badge text="Embedded C experience required" variant="caution" />
+
+**You should be comfortable with:**
+- C programming (pointers, structs, callbacks, function pointers)
+- Basic networking concepts (IP addresses, TCP/UDP, HTTP basics)
+- Our [Embedded Programming: ATmega328P](/education/embedded-programming-atmega328p/) course or equivalent bare-metal experience
+
+**Helpful but not required:**
+- FreeRTOS basics (covered in STM32 course lesson 8, or learned here from scratch)
+- Our [PCB Design with KiCad](/education/pcb-design-kicad/) lessons 5-6 (design your own ESP32 board)
+- MQTT/IoT protocol familiarity
+
+## Getting Started
+
+<Steps>
+1. **Get an ESP32 DevKitC** (or similar ESP32 development board with USB). For the capstone, a second board is ideal.
+
+2. **Install ESP-IDF** following the official [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/). Lesson 1 walks through the process.
+
+3. **Set up a Wi-Fi network** you can connect to. A phone hotspot works if needed.
+
+4. **Start with Lesson 1.** The course builds connectivity progressively, lesson by lesson.
+
+5. **Test with real clients.** Use a web browser, phone BLE scanner app, and MQTT Explorer to interact with your builds.
+</Steps>
+
+:::tip[Two boards for the capstone]
+Lessons 1 through 8 use a single ESP32. The capstone (Lesson 9) builds a two-node network, so a second ESP32 DevKitC is ideal. You can also complete it with one board by running nodes sequentially.
+:::
+
+<Copyright />
+
+<TawkWidget />
