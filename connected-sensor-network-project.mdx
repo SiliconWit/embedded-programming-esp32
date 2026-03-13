@@ -1,0 +1,1953 @@
+---
+title: "Capstone: Connected Sensor Network"
+description: "Combine everything from the course into a two-node IoT system: an outdoor sensor with battery power, deep sleep, and MQTT publishing, plus an indoor display with an OLED screen, always-on MQTT subscription, and a live dashboard."
+contributors: "sam-macharia,lawrence-langat"
+pubDate: 2026-03-12
+tags: ["esp32", "iot", "mqtt", "sensor-network", "capstone", "oled", "deep-sleep"]
+excerpt: "Build a complete two-node IoT system that ties together every skill from the course. An outdoor sensor node runs on batteries with deep sleep and publishes readings over MQTT. An indoor display node subscribes to those readings and shows live data on an SSD1306 OLED. This is end-to-end IoT deployment with a production checklist."
+heroImage: "https://cdn.siliconwit.com/education/embedded-programming-esp32/ESP32-WROOM-Pinout.png"
+---
+
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import UniversalContentContributors from '../../../../components/UniversalContentContributors.astro';
+import InArticleAd from '../../../../components/InArticleAd.astro';
+import Copyright from '../../../../components/Copyright.astro';
+import BionicText from '../../../../components/BionicText.astro';
+import TailwindWrapper from '../../../../components/TailwindWrapper.jsx';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/starlight/components';
+
+<UniversalContentContributors 
+  contributors={frontmatter.contributors}
+/>
+
+
+
+import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
+
+Every lesson so far has focused on one capability at a time. Now you will combine them all into a real deployment. The capstone is a two-node wireless sensor network: an outdoor node that wakes from deep sleep, reads sensors, publishes over MQTT, and goes back to sleep; and an indoor node that stays powered, subscribes to the same MQTT topics, and displays live readings on an OLED screen. You will handle reconnection, offline buffering, OTA updates for both nodes, and walk through a production readiness checklist. This is what a complete IoT project looks like. #ESP32 #SensorNetwork #Capstone
+
+## What We Are Building
+
+<Card title="Two-Node Connected Sensor Network" icon="star">
+A complete IoT deployment with two ESP32 nodes. The outdoor sensor node runs on batteries, wakes every 5 minutes, reads temperature, humidity, and soil moisture, publishes to an MQTT broker over TLS, and returns to deep sleep. The indoor display node is always on, subscribes to the sensor topics, renders live data on an SSD1306 OLED (128x64), shows connection status, and provides a web dashboard. Both nodes support OTA firmware updates and implement watchdog supervision.
+</Card>
+
+**System specifications:**
+
+| Parameter | Outdoor Sensor Node | Indoor Display Node |
+|-----------|-------------------|-------------------|
+| MCU | ESP32 DevKitC | ESP32 DevKitC |
+| Power | 2x AA batteries | USB (always on) |
+| Sleep Mode | Deep sleep, 5 min wake cycle | None (always active) |
+| Sensors | DHT22, soil moisture | None |
+| Display | None | SSD1306 OLED 128x64 (I2C) |
+| MQTT Role | Publisher (QoS 1) | Subscriber (QoS 1) |
+| Web Server | None | HTTP dashboard on port 80 |
+| OTA | Pull-based update check on each wake | Pull-based, checks every hour |
+| Watchdog | Task watchdog, 30s timeout | Task watchdog, 60s timeout |
+| Last Will | "outdoor-node-offline" on status topic | "display-node-offline" on status topic |
+
+### Bill of Materials
+
+| Ref | Component | Quantity | Notes |
+|-----|-----------|----------|-------|
+| U1 | ESP32 DevKitC (outdoor node) | 1 | Battery powered |
+| U2 | ESP32 DevKitC (indoor node) | 1 | USB powered (second board ideal, can share one) |
+| S1 | DHT22 temperature/humidity sensor | 1 | Reused from previous lessons |
+| S2 | Capacitive soil moisture sensor | 1 | Reused from Lesson 5 |
+| D1 | SSD1306 OLED display (128x64, I2C) | 1 | Or reuse from prior courses |
+| B1 | 2x AA battery holder | 1 | Reused from Lesson 8 |
+| | 2x AA batteries | 2 | Alkaline or lithium |
+| R1 | 4.7k ohm resistor | 1 | DHT22 pull-up |
+| | Breadboard + jumper wires | 2 sets | One per node |
+
+## System Architecture
+
+<InArticleAd />
+
+
+The system consists of two ESP32 nodes communicating through an MQTT broker. The outdoor sensor node is battery powered and spends most of its time in deep sleep. Every 5 minutes it wakes, reads three sensors (DHT22 for temperature and humidity, capacitive soil moisture via ADC, battery voltage via ADC with a voltage divider), connects to Wi-Fi, publishes all readings to the MQTT broker over TLS, checks for OTA firmware updates, and returns to deep sleep. The entire wake cycle takes about 5 to 8 seconds.
+
+The indoor display node is USB powered and always on. It maintains a persistent MQTT connection, subscribes to the outdoor sensor topics, and renders live data on an SSD1306 OLED (128x64 pixels, I2C). It also runs an HTTP server on port 80 that serves a simple web dashboard showing the same readings in a browser. Both nodes register last will messages with the broker so that if either goes offline unexpectedly, the other (or any monitoring client) receives a notification.
+
+Data flows in one direction for sensor readings:
+
+```
+┌──────────────────┐          ┌──────────────┐          ┌──────────────────┐
+│  Outdoor Sensor  │          │              │          │  Indoor Display  │
+│     Node         │─publish──│  MQTT Broker │──deliver─│     Node         │
+│  (battery, sleep)│          │   (TLS)      │          │  (USB, always on)│
+└──────────────────┘          └──────────────┘          └──────────────────┘
+    DHT22, Soil,                  HiveMQ /               SSD1306 OLED,
+    Battery ADC                   Mosquitto               HTTP Dashboard
+```
+
+Both nodes also pull OTA updates from a firmware HTTP server on your local network. The outdoor node checks once per wake cycle; the indoor node checks every hour.
+
+## MQTT Topic Design
+
+<InArticleAd />
+
+
+A clean topic hierarchy keeps the system organized and makes it easy to add more sensor nodes later. All topics are nested under `home/outdoor/` for this node:
+
+```
+home/outdoor/temperature    →  "23.5"       (Celsius, retained)
+home/outdoor/humidity       →  "61.2"       (percent, retained)
+home/outdoor/soil           →  "42"         (percent, retained)
+home/outdoor/battery        →  "3.12"       (volts, retained)
+home/outdoor/status         →  "online" / "outdoor-node-offline" (retained, last will)
+```
+
+### Topic Design Decisions
+
+**Retained messages.** Every data topic uses retained messages. This means a new subscriber (such as the indoor display node rebooting) immediately receives the last known values without waiting for the next sensor wake cycle. The status topic is also retained so that the last will message persists until the node comes back online and overwrites it with "online."
+
+**QoS 1 (at least once).** All publishes and subscriptions use QoS 1. QoS 0 would risk losing a reading if the TCP connection drops mid-publish, and the outdoor node cannot retry because it is about to enter deep sleep. QoS 2 (exactly once) adds extra round trips that increase wake time and battery drain. QoS 1 is the practical middle ground: the broker acknowledges receipt, and the occasional duplicate message is harmless for sensor data (the display simply shows the latest value).
+
+**Flat values, not JSON.** Each topic carries a single numeric string. This is simpler to parse on the display node and avoids pulling in a JSON library. If you later need structured payloads (timestamps, units, node IDs), switching to JSON is straightforward.
+
+**Last will message.** The outdoor node registers its last will on `home/outdoor/status` with the payload `outdoor-node-offline`, QoS 1, retained. When the node connects, it immediately publishes `online` to the same topic. If the node crashes or the network drops, the broker delivers the last will after the keep-alive timeout expires.
+
+## Circuit Connections
+
+<InArticleAd />
+
+
+### Outdoor Sensor Node Wiring
+
+Connect the DHT22 sensor and soil moisture sensor to the ESP32 on a breadboard. The battery voltage is read through a resistor voltage divider so that the full battery range (0 to 4.2V for lithium, 0 to 3.3V for alkaline) maps into the ESP32's ADC input range (0 to 3.3V). If you are using 2x AA alkaline batteries (3.0V nominal), the divider is optional since the voltage is already within range, but including it protects the ADC from any overshoot.
+
+| ESP32 Pin | Component | Notes |
+|-----------|-----------|-------|
+| GPIO 4 | DHT22 data pin | 4.7k pull-up to 3.3V |
+| 3.3V | DHT22 VCC | Power supply |
+| GND | DHT22 GND | Common ground |
+| GPIO 34 | Soil moisture sensor AOUT | ADC1_CHANNEL_6 |
+| 3.3V | Soil moisture sensor VCC | Power supply |
+| GND | Soil moisture sensor GND | Common ground |
+| GPIO 35 | Battery voltage divider midpoint | ADC1_CHANNEL_7 |
+| GND | Voltage divider bottom | Two 100k resistors |
+| Battery + | Voltage divider top | Through 100k to GPIO 35 |
+
+The voltage divider uses two 100k ohm resistors. The midpoint connects to GPIO 35. With this divider, a 3.0V battery reads as 1.5V at the ADC, and you multiply by 2 in software to get the true voltage.
+
+### Indoor Display Node Wiring
+
+| ESP32 Pin | Component | Notes |
+|-----------|-----------|-------|
+| GPIO 21 (SDA) | SSD1306 SDA | I2C data |
+| GPIO 22 (SCL) | SSD1306 SCL | I2C clock |
+| 3.3V | SSD1306 VCC | Power supply (some modules need 5V, check yours) |
+| GND | SSD1306 GND | Common ground |
+
+Most SSD1306 breakout boards have built-in pull-up resistors on SDA and SCL. If your display does not, add 4.7k pull-ups from each line to 3.3V. The I2C address for the SSD1306 is typically `0x3C`. Some modules use `0x3D`; check the silkscreen or datasheet for your board.
+
+## Outdoor Sensor Node Firmware
+
+<InArticleAd />
+
+
+This is the complete `main.c` for the outdoor sensor node. It combines deep sleep (Lesson 8), MQTT with TLS (Lesson 5), ADC sensor reading (Lesson 2), and OTA updates (Lesson 7) into a single wake-publish-sleep cycle.
+
+### Project Structure
+
+<FileTree>
+- outdoor_sensor_node/
+  - CMakeLists.txt
+  - sdkconfig.defaults
+  - main/
+    - CMakeLists.txt
+    - main.c
+    - Kconfig.projbuild
+  - server_certs/
+    - mqtt_server.pem
+</FileTree>
+
+### sdkconfig.defaults
+
+```ini
+# Partition table for OTA
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+
+# Wi-Fi
+CONFIG_ESP_WIFI_SSID="YOUR_SSID"
+CONFIG_ESP_WIFI_PASSWORD="YOUR_PASSWORD"
+
+# MQTT
+CONFIG_BROKER_URL="mqtts://your-broker.hivemq.cloud:8883"
+CONFIG_MQTT_USERNAME="your-username"
+CONFIG_MQTT_PASSWORD="your-password"
+
+# OTA
+CONFIG_FIRMWARE_UPGRADE_URL="https://192.168.1.100:8070/outdoor_sensor_node.bin"
+
+# Task watchdog
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+```
+
+### main/Kconfig.projbuild
+
+```kconfig
+menu "Outdoor Sensor Node Configuration"
+
+    config BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtts://broker.hivemq.cloud:8883"
+        help
+            URL of the MQTT broker (mqtts:// for TLS).
+
+    config MQTT_USERNAME
+        string "MQTT Username"
+        default ""
+
+    config MQTT_PASSWORD
+        string "MQTT Password"
+        default ""
+
+    config FIRMWARE_UPGRADE_URL
+        string "OTA Firmware URL"
+        default "https://192.168.1.100:8070/outdoor_sensor_node.bin"
+        help
+            HTTP(S) URL where new firmware binaries are hosted.
+
+    config DEEP_SLEEP_SECONDS
+        int "Deep sleep duration in seconds"
+        default 300
+        help
+            How long the node sleeps between wake cycles (300 = 5 minutes).
+
+endmenu
+```
+
+### main/CMakeLists.txt
+
+```cmake
+idf_component_register(
+    SRCS "main.c"
+    INCLUDE_DIRS "."
+    EMBED_TXTFILES "${PROJECT_PATH}/server_certs/mqtt_server.pem"
+)
+```
+
+### main/main.c (Outdoor Sensor Node)
+
+```c
+/*
+ * Outdoor Sensor Node - Connected Sensor Network Capstone
+ *
+ * Wakes from deep sleep, reads DHT22 + soil moisture + battery voltage,
+ * publishes to MQTT over TLS, checks for OTA updates, returns to deep sleep.
+ *
+ * ESP-IDF v5.x
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+
+#include "esp_system.h"
+#include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_sleep.h"
+#include "esp_timer.h"
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+#include "esp_task_wdt.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "nvs_flash.h"
+#include "mqtt_client.h"
+#include "driver/gpio.h"
+#include "rom/ets_sys.h"
+
+static const char *TAG = "outdoor_node";
+
+/* ── Pin definitions ── */
+#define DHT22_GPIO          GPIO_NUM_4
+#define SOIL_ADC_CHANNEL    ADC_CHANNEL_6   /* GPIO 34 */
+#define BATT_ADC_CHANNEL    ADC_CHANNEL_7   /* GPIO 35 */
+
+/* ── MQTT topics ── */
+#define TOPIC_TEMPERATURE   "home/outdoor/temperature"
+#define TOPIC_HUMIDITY      "home/outdoor/humidity"
+#define TOPIC_SOIL          "home/outdoor/soil"
+#define TOPIC_BATTERY       "home/outdoor/battery"
+#define TOPIC_STATUS        "home/outdoor/status"
+
+/* ── Wi-Fi event bits ── */
+#define WIFI_CONNECTED_BIT  BIT0
+#define WIFI_FAIL_BIT       BIT1
+
+/* ── RTC memory (survives deep sleep) ── */
+RTC_DATA_ATTR static int      boot_count = 0;
+RTC_DATA_ATTR static uint32_t msg_counter = 0;
+
+/* ── Globals ── */
+static EventGroupHandle_t wifi_event_group;
+static int wifi_retry_count = 0;
+#define MAX_WIFI_RETRIES 5
+
+/* ── Firmware version for OTA comparison ── */
+#define FIRMWARE_VERSION "1.0.0"
+
+/* ── Embedded broker CA certificate ── */
+extern const uint8_t mqtt_server_pem_start[] asm("_binary_mqtt_server_pem_start");
+extern const uint8_t mqtt_server_pem_end[]   asm("_binary_mqtt_server_pem_end");
+
+/* ──────────────────────────────────────────────
+ * DHT22 bit-bang driver (single-wire protocol)
+ * ────────────────────────────────────────────── */
+
+typedef struct {
+    float temperature;
+    float humidity;
+    bool  valid;
+} dht22_reading_t;
+
+static dht22_reading_t dht22_read(void)
+{
+    dht22_reading_t result = { .valid = false };
+    uint8_t data[5] = {0};
+
+    /* Send start signal: pull low 1 ms, then release */
+    gpio_set_direction(DHT22_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(DHT22_GPIO, 0);
+    ets_delay_us(1200);
+    gpio_set_level(DHT22_GPIO, 1);
+    ets_delay_us(30);
+    gpio_set_direction(DHT22_GPIO, GPIO_MODE_INPUT);
+
+    /* Wait for sensor response: low 80 us, then high 80 us */
+    int timeout = 100;
+    while (gpio_get_level(DHT22_GPIO) == 1 && --timeout > 0) {
+        ets_delay_us(1);
+    }
+    if (timeout <= 0) return result;
+
+    timeout = 100;
+    while (gpio_get_level(DHT22_GPIO) == 0 && --timeout > 0) {
+        ets_delay_us(1);
+    }
+    if (timeout <= 0) return result;
+
+    timeout = 100;
+    while (gpio_get_level(DHT22_GPIO) == 1 && --timeout > 0) {
+        ets_delay_us(1);
+    }
+    if (timeout <= 0) return result;
+
+    /* Read 40 bits (5 bytes) */
+    for (int i = 0; i < 40; i++) {
+        /* Wait for the low period to end */
+        timeout = 100;
+        while (gpio_get_level(DHT22_GPIO) == 0 && --timeout > 0) {
+            ets_delay_us(1);
+        }
+        /* Measure the high period: >40 us means '1', <30 us means '0' */
+        int high_count = 0;
+        while (gpio_get_level(DHT22_GPIO) == 1 && high_count < 100) {
+            ets_delay_us(1);
+            high_count++;
+        }
+        data[i / 8] <<= 1;
+        if (high_count > 35) {
+            data[i / 8] |= 1;
+        }
+    }
+
+    /* Verify checksum */
+    uint8_t checksum = data[0] + data[1] + data[2] + data[3];
+    if (checksum != data[4]) {
+        ESP_LOGW(TAG, "DHT22 checksum failed: expected %d, got %d", data[4], checksum);
+        return result;
+    }
+
+    /* Parse humidity (bytes 0-1) and temperature (bytes 2-3) */
+    uint16_t raw_humidity = (data[0] << 8) | data[1];
+    uint16_t raw_temp     = (data[2] << 8) | data[3];
+
+    result.humidity    = raw_humidity / 10.0f;
+    result.temperature = (raw_temp & 0x7FFF) / 10.0f;
+    if (raw_temp & 0x8000) {
+        result.temperature = -result.temperature;  /* Negative temperature */
+    }
+    result.valid = true;
+
+    ESP_LOGI(TAG, "DHT22: %.1f C, %.1f %%", result.temperature, result.humidity);
+    return result;
+}
+
+/* ──────────────────────────────────────────────
+ * ADC reading helpers
+ * ────────────────────────────────────────────── */
+
+static adc_oneshot_unit_handle_t adc1_handle = NULL;
+static adc_cali_handle_t        adc1_cali_handle = NULL;
+
+static void adc_init(void)
+{
+    /* Configure ADC1 unit */
+    adc_oneshot_unit_init_cfg_t unit_cfg = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_cfg, &adc1_handle));
+
+    /* Configure soil moisture channel (GPIO 34) */
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten  = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, SOIL_ADC_CHANNEL, &chan_cfg));
+
+    /* Configure battery voltage channel (GPIO 35) */
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, BATT_ADC_CHANNEL, &chan_cfg));
+
+    /* Create calibration handle for voltage conversion */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id  = ADC_UNIT_1,
+        .atten    = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_cali_create_scheme_curve_fitting(&cali_cfg, &adc1_cali_handle);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t cali_cfg = {
+        .unit_id  = ADC_UNIT_1,
+        .atten    = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_cali_create_scheme_line_fitting(&cali_cfg, &adc1_cali_handle);
+#endif
+}
+
+static int adc_read_voltage_mv(adc_channel_t channel)
+{
+    int raw = 0;
+    int voltage_mv = 0;
+    adc_oneshot_read(adc1_handle, channel, &raw);
+    if (adc1_cali_handle) {
+        adc_cali_raw_to_voltage(adc1_cali_handle, raw, &voltage_mv);
+    } else {
+        voltage_mv = (raw * 3300) / 4095;  /* Fallback linear approximation */
+    }
+    return voltage_mv;
+}
+
+static int read_soil_moisture_percent(void)
+{
+    int mv = adc_read_voltage_mv(SOIL_ADC_CHANNEL);
+    /*
+     * Calibration: capacitive soil moisture sensor
+     * ~2800 mV in dry air  (0% moisture)
+     * ~1200 mV in water    (100% moisture)
+     * Clamp and map linearly.
+     */
+    int percent = (2800 - mv) * 100 / (2800 - 1200);
+    if (percent < 0)   percent = 0;
+    if (percent > 100)  percent = 100;
+    ESP_LOGI(TAG, "Soil moisture: %d mV -> %d%%", mv, percent);
+    return percent;
+}
+
+static float read_battery_voltage(void)
+{
+    int mv = adc_read_voltage_mv(BATT_ADC_CHANNEL);
+    /*
+     * Voltage divider: 2x 100k resistors.
+     * ADC reads half of actual battery voltage.
+     */
+    float voltage = (mv * 2.0f) / 1000.0f;
+    ESP_LOGI(TAG, "Battery: %d mV at ADC -> %.2f V actual", mv, voltage);
+    return voltage;
+}
+
+static void adc_deinit(void)
+{
+    if (adc1_cali_handle) {
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+        adc_cali_delete_scheme_curve_fitting(adc1_cali_handle);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        adc_cali_delete_scheme_line_fitting(adc1_cali_handle);
+#endif
+        adc1_cali_handle = NULL;
+    }
+    if (adc1_handle) {
+        adc_oneshot_del_unit(adc1_handle);
+        adc1_handle = NULL;
+    }
+}
+
+/* ──────────────────────────────────────────────
+ * Wi-Fi (fast connect with static IP optional)
+ * ────────────────────────────────────────────── */
+
+static void wifi_event_handler(void *arg, esp_event_base_t base,
+                               int32_t event_id, void *data)
+{
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (wifi_retry_count < MAX_WIFI_RETRIES) {
+            wifi_retry_count++;
+            ESP_LOGW(TAG, "Wi-Fi disconnected, retry %d/%d", wifi_retry_count, MAX_WIFI_RETRIES);
+            esp_wifi_connect();
+        } else {
+            xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+        }
+    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_retry_count = 0;
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+static bool wifi_connect(void)
+{
+    wifi_event_group = xEventGroupCreate();
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                               &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid     = CONFIG_ESP_WIFI_SSID,
+            .password = CONFIG_ESP_WIFI_PASSWORD,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    /* Disable power save for faster connect during short wake window */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS(10000));
+
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "Wi-Fi connected");
+        return true;
+    }
+    ESP_LOGE(TAG, "Wi-Fi connection failed");
+    return false;
+}
+
+/* ──────────────────────────────────────────────
+ * MQTT publish with TLS
+ * ────────────────────────────────────────────── */
+
+static bool mqtt_publish_done = false;
+static bool mqtt_connected    = false;
+
+static void mqtt_event_handler(void *args, esp_event_base_t base,
+                               int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT connected");
+        mqtt_connected = true;
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "MQTT disconnected");
+        mqtt_connected = false;
+        break;
+    case MQTT_EVENT_PUBLISHED:
+        ESP_LOGI(TAG, "MQTT message published, msg_id=%d", event->msg_id);
+        break;
+    case MQTT_EVENT_ERROR:
+        ESP_LOGE(TAG, "MQTT error type: %d", event->error_handle->error_type);
+        break;
+    default:
+        break;
+    }
+}
+
+static void publish_sensor_data(esp_mqtt_client_handle_t client,
+                                dht22_reading_t *dht, int soil_pct, float batt_v)
+{
+    char payload[16];
+
+    /* Publish status "online" (retained) */
+    esp_mqtt_client_publish(client, TOPIC_STATUS, "online", 0, 1, 1);
+
+    /* Temperature */
+    snprintf(payload, sizeof(payload), "%.1f", dht->temperature);
+    esp_mqtt_client_publish(client, TOPIC_TEMPERATURE, payload, 0, 1, 1);
+
+    /* Humidity */
+    snprintf(payload, sizeof(payload), "%.1f", dht->humidity);
+    esp_mqtt_client_publish(client, TOPIC_HUMIDITY, payload, 0, 1, 1);
+
+    /* Soil moisture */
+    snprintf(payload, sizeof(payload), "%d", soil_pct);
+    esp_mqtt_client_publish(client, TOPIC_SOIL, payload, 0, 1, 1);
+
+    /* Battery voltage */
+    snprintf(payload, sizeof(payload), "%.2f", batt_v);
+    esp_mqtt_client_publish(client, TOPIC_BATTERY, payload, 0, 1, 1);
+
+    msg_counter++;
+    ESP_LOGI(TAG, "Published all readings (msg_counter=%lu)", (unsigned long)msg_counter);
+}
+
+/* ──────────────────────────────────────────────
+ * OTA update check
+ * ────────────────────────────────────────────── */
+
+static void check_ota_update(void)
+{
+    ESP_LOGI(TAG, "Checking for OTA update at %s", CONFIG_FIRMWARE_UPGRADE_URL);
+
+    esp_http_client_config_t http_cfg = {
+        .url = CONFIG_FIRMWARE_UPGRADE_URL,
+        .timeout_ms = 5000,
+    };
+
+    esp_https_ota_config_t ota_cfg = {
+        .http_config = &http_cfg,
+    };
+
+    esp_err_t ret = esp_https_ota(&ota_cfg);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA update successful, restarting");
+        esp_restart();
+    } else if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_HTTP_CONNECT) {
+        ESP_LOGI(TAG, "No OTA update available (server unreachable or no new binary)");
+    } else {
+        ESP_LOGW(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+    }
+}
+
+/* ──────────────────────────────────────────────
+ * Deep sleep entry
+ * ────────────────────────────────────────────── */
+
+static void enter_deep_sleep(void)
+{
+    int sleep_sec = CONFIG_DEEP_SLEEP_SECONDS;
+    ESP_LOGI(TAG, "Entering deep sleep for %d seconds (boot_count=%d, msg_counter=%lu)",
+             sleep_sec, boot_count, (unsigned long)msg_counter);
+
+    esp_sleep_enable_timer_wakeup((uint64_t)sleep_sec * 1000000ULL);
+    esp_deep_sleep_start();
+}
+
+/* ──────────────────────────────────────────────
+ * Main application
+ * ────────────────────────────────────────────── */
+
+void app_main(void)
+{
+    boot_count++;
+    ESP_LOGI(TAG, "=== Outdoor Sensor Node boot #%d ===", boot_count);
+
+    /* Initialize NVS (required for Wi-Fi and MQTT) */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    /* Mark OTA partition as valid (rollback protection) */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(TAG, "First boot after OTA, marking firmware as valid");
+            esp_ota_mark_app_valid_cancel_rollback();
+        }
+    }
+
+    /* Subscribe to task watchdog */
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
+    /* ── Read sensors ── */
+    adc_init();
+
+    dht22_reading_t dht = dht22_read();
+    if (!dht.valid) {
+        ESP_LOGW(TAG, "DHT22 read failed, retrying after 2 seconds");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        dht = dht22_read();
+    }
+    if (!dht.valid) {
+        /* Use placeholder values so we still publish battery/soil */
+        dht.temperature = -999.0f;
+        dht.humidity    = -999.0f;
+        ESP_LOGE(TAG, "DHT22 read failed twice, publishing error values");
+    }
+
+    int   soil_pct = read_soil_moisture_percent();
+    float batt_v   = read_battery_voltage();
+
+    adc_deinit();
+    esp_task_wdt_reset();
+
+    /* ── Connect to Wi-Fi ── */
+    if (!wifi_connect()) {
+        ESP_LOGE(TAG, "Cannot connect to Wi-Fi, going to sleep");
+        enter_deep_sleep();
+    }
+    esp_task_wdt_reset();
+
+    /* ── Connect to MQTT broker and publish ── */
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker = {
+            .address.uri = CONFIG_BROKER_URL,
+            .verification.certificate = (const char *)mqtt_server_pem_start,
+        },
+        .credentials = {
+            .username = CONFIG_MQTT_USERNAME,
+            .authentication.password = CONFIG_MQTT_PASSWORD,
+            .client_id = "outdoor-sensor-node",
+        },
+        .session = {
+            .last_will = {
+                .topic   = TOPIC_STATUS,
+                .msg     = "outdoor-node-offline",
+                .msg_len = 20,
+                .qos     = 1,
+                .retain  = 1,
+            },
+            .keepalive = 15,
+        },
+    };
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_start(client);
+
+    /* Wait for MQTT connection (up to 10 seconds) */
+    for (int i = 0; i < 100 && !mqtt_connected; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (mqtt_connected) {
+        publish_sensor_data(client, &dht, soil_pct, batt_v);
+        /* Brief delay to allow QoS 1 acknowledgments */
+        vTaskDelay(pdMS_TO_TICKS(500));
+    } else {
+        ESP_LOGE(TAG, "MQTT connection timed out");
+    }
+
+    esp_mqtt_client_stop(client);
+    esp_mqtt_client_destroy(client);
+    esp_task_wdt_reset();
+
+    /* ── Check for OTA update ── */
+    check_ota_update();
+    esp_task_wdt_reset();
+
+    /* ── Remove from watchdog before sleep ── */
+    esp_task_wdt_delete(NULL);
+
+    /* ── Enter deep sleep ── */
+    enter_deep_sleep();
+}
+```
+
+The code follows a linear flow: boot, read sensors, connect, publish, check OTA, sleep. There are no persistent tasks or event loops because the node is only awake for a few seconds. The `RTC_DATA_ATTR` variables (`boot_count` and `msg_counter`) survive deep sleep resets and let you track how many cycles the node has completed.
+
+## SSD1306 OLED Driver (I2C)
+
+<InArticleAd />
+
+
+Before writing the indoor display node firmware, you need a way to drive the SSD1306 OLED over I2C. The driver below sends raw commands and pixel data to the display controller. It includes an in-memory framebuffer (1024 bytes for 128x64 pixels) and a built-in 5x7 pixel font for rendering text. This approach is similar to what you may have seen in the ATmega328P course with SPI, but here everything goes over I2C.
+
+### How the SSD1306 I2C Protocol Works
+
+The SSD1306 uses a standard I2C interface with address `0x3C` (or `0x3D` on some boards). Every I2C write starts with a **control byte** that tells the display whether the following bytes are commands or data:
+
+- **Control byte `0x00`**: the next byte is a command (single command mode).
+- **Control byte `0x40`**: all following bytes are display data (GDDRAM pixel data).
+
+The 128x64 display is organized into 8 **pages** of 128 columns. Each page is 8 pixels tall. One byte in the framebuffer represents a vertical column of 8 pixels within a page. So the full framebuffer is 128 x 8 = 1024 bytes.
+
+### ssd1306.h
+
+Create this header in the indoor display node project at `main/ssd1306.h`:
+
+```c
+/*
+ * SSD1306 OLED I2C Driver for ESP-IDF v5.x
+ * 128x64 pixels, 1-bit monochrome
+ */
+
+#ifndef SSD1306_H
+#define SSD1306_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "driver/i2c_master.h"
+
+#define SSD1306_WIDTH   128
+#define SSD1306_HEIGHT  64
+#define SSD1306_PAGES   (SSD1306_HEIGHT / 8)
+#define SSD1306_BUF_SIZE (SSD1306_WIDTH * SSD1306_PAGES)
+
+typedef struct {
+    i2c_master_dev_handle_t dev_handle;
+    uint8_t buffer[SSD1306_BUF_SIZE];
+} ssd1306_t;
+
+/* Initialize the display (I2C bus must already be configured) */
+void ssd1306_init(ssd1306_t *oled, i2c_master_bus_handle_t bus, uint8_t addr);
+
+/* Clear the framebuffer (call ssd1306_update to push to display) */
+void ssd1306_clear(ssd1306_t *oled);
+
+/* Push the entire framebuffer to the display */
+void ssd1306_update(ssd1306_t *oled);
+
+/* Set or clear a single pixel */
+void ssd1306_pixel(ssd1306_t *oled, int x, int y, bool on);
+
+/* Draw a string using the built-in 5x7 font. x and y are in pixel coordinates. */
+void ssd1306_text(ssd1306_t *oled, int x, int y, const char *str);
+
+/* Draw a horizontal line */
+void ssd1306_hline(ssd1306_t *oled, int x, int y, int width, bool on);
+
+/* Draw a rectangle outline */
+void ssd1306_rect(ssd1306_t *oled, int x, int y, int w, int h, bool on);
+
+/* Draw a filled rectangle */
+void ssd1306_fill_rect(ssd1306_t *oled, int x, int y, int w, int h, bool on);
+
+/* Display contrast (0 to 255) */
+void ssd1306_contrast(ssd1306_t *oled, uint8_t value);
+
+#endif /* SSD1306_H */
+```
+
+### ssd1306.c
+
+```c
+/*
+ * SSD1306 OLED I2C Driver implementation
+ * Direct register writes over I2C, no external library required.
+ */
+
+#include "ssd1306.h"
+#include <string.h>
+#include "esp_log.h"
+
+static const char *TAG = "ssd1306";
+
+/* ── 5x7 pixel font (printable ASCII 32..126) ── */
+static const uint8_t font5x7[][5] = {
+    {0x00,0x00,0x00,0x00,0x00}, /* 32 (space) */
+    {0x00,0x00,0x5F,0x00,0x00}, /* 33 ! */
+    {0x00,0x07,0x00,0x07,0x00}, /* 34 " */
+    {0x14,0x7F,0x14,0x7F,0x14}, /* 35 # */
+    {0x24,0x2A,0x7F,0x2A,0x12}, /* 36 $ */
+    {0x23,0x13,0x08,0x64,0x62}, /* 37 % */
+    {0x36,0x49,0x55,0x22,0x50}, /* 38 & */
+    {0x00,0x00,0x07,0x00,0x00}, /* 39 ' */
+    {0x00,0x1C,0x22,0x41,0x00}, /* 40 ( */
+    {0x00,0x41,0x22,0x1C,0x00}, /* 41 ) */
+    {0x14,0x08,0x3E,0x08,0x14}, /* 42 * */
+    {0x08,0x08,0x3E,0x08,0x08}, /* 43 + */
+    {0x00,0x50,0x30,0x00,0x00}, /* 44 , */
+    {0x08,0x08,0x08,0x08,0x08}, /* 45 - */
+    {0x00,0x60,0x60,0x00,0x00}, /* 46 . */
+    {0x20,0x10,0x08,0x04,0x02}, /* 47 / */
+    {0x3E,0x51,0x49,0x45,0x3E}, /* 48 0 */
+    {0x00,0x42,0x7F,0x40,0x00}, /* 49 1 */
+    {0x42,0x61,0x51,0x49,0x46}, /* 50 2 */
+    {0x21,0x41,0x45,0x4B,0x31}, /* 51 3 */
+    {0x18,0x14,0x12,0x7F,0x10}, /* 52 4 */
+    {0x27,0x45,0x45,0x45,0x39}, /* 53 5 */
+    {0x3C,0x4A,0x49,0x49,0x30}, /* 54 6 */
+    {0x01,0x71,0x09,0x05,0x03}, /* 55 7 */
+    {0x36,0x49,0x49,0x49,0x36}, /* 56 8 */
+    {0x06,0x49,0x49,0x29,0x1E}, /* 57 9 */
+    {0x00,0x36,0x36,0x00,0x00}, /* 58 : */
+    {0x00,0x56,0x36,0x00,0x00}, /* 59 ; */
+    {0x08,0x14,0x22,0x41,0x00}, /* 60 < */
+    {0x14,0x14,0x14,0x14,0x14}, /* 61 = */
+    {0x00,0x41,0x22,0x14,0x08}, /* 62 > */
+    {0x02,0x01,0x51,0x09,0x06}, /* 63 ? */
+    {0x3E,0x41,0x5D,0x55,0x2E}, /* 64 @ */
+    {0x7E,0x09,0x09,0x09,0x7E}, /* 65 A */
+    {0x7F,0x49,0x49,0x49,0x36}, /* 66 B */
+    {0x3E,0x41,0x41,0x41,0x22}, /* 67 C */
+    {0x7F,0x41,0x41,0x22,0x1C}, /* 68 D */
+    {0x7F,0x49,0x49,0x49,0x41}, /* 69 E */
+    {0x7F,0x09,0x09,0x09,0x01}, /* 70 F */
+    {0x3E,0x41,0x49,0x49,0x7A}, /* 71 G */
+    {0x7F,0x08,0x08,0x08,0x7F}, /* 72 H */
+    {0x00,0x41,0x7F,0x41,0x00}, /* 73 I */
+    {0x20,0x40,0x41,0x3F,0x01}, /* 74 J */
+    {0x7F,0x08,0x14,0x22,0x41}, /* 75 K */
+    {0x7F,0x40,0x40,0x40,0x40}, /* 76 L */
+    {0x7F,0x02,0x0C,0x02,0x7F}, /* 77 M */
+    {0x7F,0x04,0x08,0x10,0x7F}, /* 78 N */
+    {0x3E,0x41,0x41,0x41,0x3E}, /* 79 O */
+    {0x7F,0x09,0x09,0x09,0x06}, /* 80 P */
+    {0x3E,0x41,0x51,0x21,0x5E}, /* 81 Q */
+    {0x7F,0x09,0x19,0x29,0x46}, /* 82 R */
+    {0x46,0x49,0x49,0x49,0x31}, /* 83 S */
+    {0x01,0x01,0x7F,0x01,0x01}, /* 84 T */
+    {0x3F,0x40,0x40,0x40,0x3F}, /* 85 U */
+    {0x1F,0x20,0x40,0x20,0x1F}, /* 86 V */
+    {0x3F,0x40,0x38,0x40,0x3F}, /* 87 W */
+    {0x63,0x14,0x08,0x14,0x63}, /* 88 X */
+    {0x07,0x08,0x70,0x08,0x07}, /* 89 Y */
+    {0x61,0x51,0x49,0x45,0x43}, /* 90 Z */
+    {0x00,0x7F,0x41,0x41,0x00}, /* 91 [ */
+    {0x02,0x04,0x08,0x10,0x20}, /* 92 \ */
+    {0x00,0x41,0x41,0x7F,0x00}, /* 93 ] */
+    {0x04,0x02,0x01,0x02,0x04}, /* 94 ^ */
+    {0x40,0x40,0x40,0x40,0x40}, /* 95 _ */
+    {0x00,0x01,0x02,0x04,0x00}, /* 96 ` */
+    {0x20,0x54,0x54,0x54,0x78}, /* 97 a */
+    {0x7F,0x48,0x44,0x44,0x38}, /* 98 b */
+    {0x38,0x44,0x44,0x44,0x20}, /* 99 c */
+    {0x38,0x44,0x44,0x48,0x7F}, /* 100 d */
+    {0x38,0x54,0x54,0x54,0x18}, /* 101 e */
+    {0x08,0x7E,0x09,0x01,0x02}, /* 102 f */
+    {0x0C,0x52,0x52,0x52,0x3E}, /* 103 g */
+    {0x7F,0x08,0x04,0x04,0x78}, /* 104 h */
+    {0x00,0x44,0x7D,0x40,0x00}, /* 105 i */
+    {0x20,0x40,0x44,0x3D,0x00}, /* 106 j */
+    {0x7F,0x10,0x28,0x44,0x00}, /* 107 k */
+    {0x00,0x41,0x7F,0x40,0x00}, /* 108 l */
+    {0x7C,0x04,0x18,0x04,0x78}, /* 109 m */
+    {0x7C,0x08,0x04,0x04,0x78}, /* 110 n */
+    {0x38,0x44,0x44,0x44,0x38}, /* 111 o */
+    {0x7C,0x14,0x14,0x14,0x08}, /* 112 p */
+    {0x08,0x14,0x14,0x18,0x7C}, /* 113 q */
+    {0x7C,0x08,0x04,0x04,0x08}, /* 114 r */
+    {0x48,0x54,0x54,0x54,0x20}, /* 115 s */
+    {0x04,0x3F,0x44,0x40,0x20}, /* 116 t */
+    {0x3C,0x40,0x40,0x20,0x7C}, /* 117 u */
+    {0x1C,0x20,0x40,0x20,0x1C}, /* 118 v */
+    {0x3C,0x40,0x30,0x40,0x3C}, /* 119 w */
+    {0x44,0x28,0x10,0x28,0x44}, /* 120 x */
+    {0x0C,0x50,0x50,0x50,0x3C}, /* 121 y */
+    {0x44,0x64,0x54,0x4C,0x44}, /* 122 z */
+    {0x00,0x08,0x36,0x41,0x00}, /* 123 { */
+    {0x00,0x00,0x7F,0x00,0x00}, /* 124 | */
+    {0x00,0x41,0x36,0x08,0x00}, /* 125 } */
+    {0x08,0x04,0x08,0x10,0x08}, /* 126 ~ */
+};
+
+/* Send a single command byte */
+static void ssd1306_cmd(ssd1306_t *oled, uint8_t cmd)
+{
+    uint8_t buf[2] = { 0x00, cmd };  /* Control byte 0x00 = command */
+    i2c_master_transmit(oled->dev_handle, buf, 2, 100);
+}
+
+void ssd1306_init(ssd1306_t *oled, i2c_master_bus_handle_t bus, uint8_t addr)
+{
+    /* Add SSD1306 as I2C device */
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = addr,
+        .scl_speed_hz    = 400000,
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev_cfg, &oled->dev_handle));
+
+    vTaskDelay(pdMS_TO_TICKS(100));  /* Wait for display power-up */
+
+    /* Initialization command sequence */
+    ssd1306_cmd(oled, 0xAE);  /* Display OFF */
+    ssd1306_cmd(oled, 0xD5);  /* Set display clock divide ratio */
+    ssd1306_cmd(oled, 0x80);  /* Default ratio */
+    ssd1306_cmd(oled, 0xA8);  /* Set multiplex ratio */
+    ssd1306_cmd(oled, 0x3F);  /* 1/64 duty (64 rows) */
+    ssd1306_cmd(oled, 0xD3);  /* Set display offset */
+    ssd1306_cmd(oled, 0x00);  /* No offset */
+    ssd1306_cmd(oled, 0x40);  /* Set start line to 0 */
+    ssd1306_cmd(oled, 0x8D);  /* Charge pump setting */
+    ssd1306_cmd(oled, 0x14);  /* Enable charge pump */
+    ssd1306_cmd(oled, 0x20);  /* Set memory addressing mode */
+    ssd1306_cmd(oled, 0x00);  /* Horizontal addressing mode */
+    ssd1306_cmd(oled, 0xA1);  /* Segment remap (column 127 mapped to SEG0) */
+    ssd1306_cmd(oled, 0xC8);  /* COM output scan direction: remapped */
+    ssd1306_cmd(oled, 0xDA);  /* Set COM pins configuration */
+    ssd1306_cmd(oled, 0x12);  /* Alternative COM pin config */
+    ssd1306_cmd(oled, 0x81);  /* Set contrast */
+    ssd1306_cmd(oled, 0xCF);  /* High contrast */
+    ssd1306_cmd(oled, 0xD9);  /* Set pre-charge period */
+    ssd1306_cmd(oled, 0xF1);
+    ssd1306_cmd(oled, 0xDB);  /* Set VCOMH deselect level */
+    ssd1306_cmd(oled, 0x40);
+    ssd1306_cmd(oled, 0xA4);  /* Entire display ON (follow RAM) */
+    ssd1306_cmd(oled, 0xA6);  /* Normal display (not inverted) */
+    ssd1306_cmd(oled, 0xAF);  /* Display ON */
+
+    ssd1306_clear(oled);
+    ssd1306_update(oled);
+
+    ESP_LOGI(TAG, "SSD1306 initialized (128x64, addr=0x%02X)", addr);
+}
+
+void ssd1306_clear(ssd1306_t *oled)
+{
+    memset(oled->buffer, 0, SSD1306_BUF_SIZE);
+}
+
+void ssd1306_update(ssd1306_t *oled)
+{
+    /* Set column address range: 0 to 127 */
+    ssd1306_cmd(oled, 0x21);
+    ssd1306_cmd(oled, 0x00);
+    ssd1306_cmd(oled, 0x7F);
+
+    /* Set page address range: 0 to 7 */
+    ssd1306_cmd(oled, 0x22);
+    ssd1306_cmd(oled, 0x00);
+    ssd1306_cmd(oled, 0x07);
+
+    /* Send framebuffer: control byte 0x40 followed by all pixel data */
+    uint8_t buf[SSD1306_BUF_SIZE + 1];
+    buf[0] = 0x40;  /* Data mode */
+    memcpy(&buf[1], oled->buffer, SSD1306_BUF_SIZE);
+    i2c_master_transmit(oled->dev_handle, buf, sizeof(buf), 200);
+}
+
+void ssd1306_pixel(ssd1306_t *oled, int x, int y, bool on)
+{
+    if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT) return;
+
+    int page = y / 8;
+    int bit  = y % 8;
+    int idx  = page * SSD1306_WIDTH + x;
+
+    if (on) {
+        oled->buffer[idx] |= (1 << bit);
+    } else {
+        oled->buffer[idx] &= ~(1 << bit);
+    }
+}
+
+void ssd1306_text(ssd1306_t *oled, int x, int y, const char *str)
+{
+    int cursor_x = x;
+    while (*str) {
+        char c = *str++;
+        if (c < 32 || c > 126) c = '?';
+
+        const uint8_t *glyph = font5x7[c - 32];
+        for (int col = 0; col < 5; col++) {
+            uint8_t column_data = glyph[col];
+            for (int row = 0; row < 7; row++) {
+                if (column_data & (1 << row)) {
+                    ssd1306_pixel(oled, cursor_x + col, y + row, true);
+                }
+            }
+        }
+        cursor_x += 6;  /* 5 pixels for glyph + 1 pixel spacing */
+
+        if (cursor_x >= SSD1306_WIDTH) break;  /* Stop at screen edge */
+    }
+}
+
+void ssd1306_hline(ssd1306_t *oled, int x, int y, int width, bool on)
+{
+    for (int i = 0; i < width; i++) {
+        ssd1306_pixel(oled, x + i, y, on);
+    }
+}
+
+void ssd1306_rect(ssd1306_t *oled, int x, int y, int w, int h, bool on)
+{
+    ssd1306_hline(oled, x, y, w, on);
+    ssd1306_hline(oled, x, y + h - 1, w, on);
+    for (int i = 0; i < h; i++) {
+        ssd1306_pixel(oled, x, y + i, on);
+        ssd1306_pixel(oled, x + w - 1, y + i, on);
+    }
+}
+
+void ssd1306_fill_rect(ssd1306_t *oled, int x, int y, int w, int h, bool on)
+{
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            ssd1306_pixel(oled, x + col, y + row, on);
+        }
+    }
+}
+
+void ssd1306_contrast(ssd1306_t *oled, uint8_t value)
+{
+    ssd1306_cmd(oled, 0x81);
+    ssd1306_cmd(oled, value);
+}
+```
+
+Each character in the 5x7 font is stored as 5 bytes, where each byte represents one column of pixels. The `ssd1306_text` function walks through the string, looks up each character's glyph, and sets the corresponding pixels in the framebuffer. After composing the full frame, a single call to `ssd1306_update` pushes all 1024 bytes to the display over I2C.
+
+## Indoor Display Node Firmware
+
+<InArticleAd />
+
+
+The indoor display node is the second half of the system. It subscribes to the outdoor sensor topics, renders the data on the SSD1306 OLED, and serves a web dashboard. Unlike the outdoor node, this one runs continuously with multiple FreeRTOS tasks.
+
+### Project Structure
+
+<FileTree>
+- indoor_display_node/
+  - CMakeLists.txt
+  - sdkconfig.defaults
+  - main/
+    - CMakeLists.txt
+    - main.c
+    - ssd1306.h
+    - ssd1306.c
+    - Kconfig.projbuild
+  - server_certs/
+    - mqtt_server.pem
+</FileTree>
+
+### sdkconfig.defaults
+
+```ini
+# Partition table for OTA
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+
+# Wi-Fi
+CONFIG_ESP_WIFI_SSID="YOUR_SSID"
+CONFIG_ESP_WIFI_PASSWORD="YOUR_PASSWORD"
+
+# MQTT
+CONFIG_BROKER_URL="mqtts://your-broker.hivemq.cloud:8883"
+CONFIG_MQTT_USERNAME="your-username"
+CONFIG_MQTT_PASSWORD="your-password"
+
+# OTA
+CONFIG_FIRMWARE_UPGRADE_URL="https://192.168.1.100:8070/indoor_display_node.bin"
+
+# Task watchdog (longer for always-on node)
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+
+# HTTP server
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+```
+
+### main/Kconfig.projbuild
+
+```kconfig
+menu "Indoor Display Node Configuration"
+
+    config BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtts://broker.hivemq.cloud:8883"
+
+    config MQTT_USERNAME
+        string "MQTT Username"
+        default ""
+
+    config MQTT_PASSWORD
+        string "MQTT Password"
+        default ""
+
+    config FIRMWARE_UPGRADE_URL
+        string "OTA Firmware URL"
+        default "https://192.168.1.100:8070/indoor_display_node.bin"
+
+    config OTA_CHECK_INTERVAL_MIN
+        int "OTA check interval in minutes"
+        default 60
+
+endmenu
+```
+
+### main/CMakeLists.txt
+
+```cmake
+idf_component_register(
+    SRCS "main.c" "ssd1306.c"
+    INCLUDE_DIRS "."
+    EMBED_TXTFILES "${PROJECT_PATH}/server_certs/mqtt_server.pem"
+)
+```
+
+### main/main.c (Indoor Display Node)
+
+```c
+/*
+ * Indoor Display Node - Connected Sensor Network Capstone
+ *
+ * Always-on node that subscribes to outdoor sensor MQTT topics,
+ * displays data on SSD1306 OLED, and serves a web dashboard.
+ *
+ * ESP-IDF v5.x
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "freertos/semphr.h"
+
+#include "esp_system.h"
+#include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_timer.h"
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+#include "esp_http_server.h"
+#include "esp_task_wdt.h"
+#include "esp_sntp.h"
+#include "nvs_flash.h"
+#include "mqtt_client.h"
+#include "driver/i2c_master.h"
+
+#include "ssd1306.h"
+
+static const char *TAG = "display_node";
+
+/* ── MQTT topics (must match outdoor node) ── */
+#define TOPIC_TEMPERATURE   "home/outdoor/temperature"
+#define TOPIC_HUMIDITY      "home/outdoor/humidity"
+#define TOPIC_SOIL          "home/outdoor/soil"
+#define TOPIC_BATTERY       "home/outdoor/battery"
+#define TOPIC_STATUS        "home/outdoor/status"
+
+/* ── Wi-Fi event bits ── */
+#define WIFI_CONNECTED_BIT  BIT0
+#define WIFI_FAIL_BIT       BIT1
+
+/* ── I2C configuration ── */
+#define I2C_SDA_GPIO        GPIO_NUM_21
+#define I2C_SCL_GPIO        GPIO_NUM_22
+#define SSD1306_I2C_ADDR    0x3C
+
+/* ── Sensor data store (protected by mutex) ── */
+typedef struct {
+    float   temperature;
+    float   humidity;
+    int     soil_pct;
+    float   battery_v;
+    bool    outdoor_online;
+    int64_t last_update_us;  /* esp_timer_get_time() at last MQTT message */
+} sensor_data_t;
+
+static sensor_data_t     sensor_data = {0};
+static SemaphoreHandle_t data_mutex;
+
+/* ── Globals ── */
+static EventGroupHandle_t wifi_event_group;
+static ssd1306_t          oled;
+static int                wifi_retry_count = 0;
+static bool               wifi_connected_flag = false;
+#define MAX_WIFI_RETRIES   10
+
+/* ── Embedded broker CA certificate ── */
+extern const uint8_t mqtt_server_pem_start[] asm("_binary_mqtt_server_pem_start");
+extern const uint8_t mqtt_server_pem_end[]   asm("_binary_mqtt_server_pem_end");
+
+/* ──────────────────────────────────────────────
+ * Wi-Fi
+ * ────────────────────────────────────────────── */
+
+static void wifi_event_handler(void *arg, esp_event_base_t base,
+                               int32_t event_id, void *data)
+{
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_connected_flag = false;
+        if (wifi_retry_count < MAX_WIFI_RETRIES) {
+            wifi_retry_count++;
+            ESP_LOGW(TAG, "Wi-Fi disconnected, retry %d/%d", wifi_retry_count, MAX_WIFI_RETRIES);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_wifi_connect();
+        } else {
+            xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+        }
+    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_retry_count = 0;
+        wifi_connected_flag = true;
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+static bool wifi_init_and_connect(void)
+{
+    wifi_event_group = xEventGroupCreate();
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                               &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid     = CONFIG_ESP_WIFI_SSID,
+            .password = CONFIG_ESP_WIFI_PASSWORD,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS(15000));
+
+    return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
+/* ──────────────────────────────────────────────
+ * SNTP time sync (for "last update" display)
+ * ────────────────────────────────────────────── */
+
+static void time_sync_init(void)
+{
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+    ESP_LOGI(TAG, "SNTP time sync initialized");
+}
+
+/* ──────────────────────────────────────────────
+ * MQTT subscription and data parsing
+ * ────────────────────────────────────────────── */
+
+static void parse_mqtt_data(const char *topic, int topic_len,
+                            const char *data, int data_len)
+{
+    /* Null-terminate topic and data for safe parsing */
+    char topic_buf[64];
+    char data_buf[32];
+    int tlen = (topic_len < 63) ? topic_len : 63;
+    int dlen = (data_len < 31) ? data_len : 31;
+    memcpy(topic_buf, topic, tlen);
+    topic_buf[tlen] = '\0';
+    memcpy(data_buf, data, dlen);
+    data_buf[dlen] = '\0';
+
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+
+    if (strcmp(topic_buf, TOPIC_TEMPERATURE) == 0) {
+        sensor_data.temperature = strtof(data_buf, NULL);
+        sensor_data.last_update_us = esp_timer_get_time();
+    } else if (strcmp(topic_buf, TOPIC_HUMIDITY) == 0) {
+        sensor_data.humidity = strtof(data_buf, NULL);
+    } else if (strcmp(topic_buf, TOPIC_SOIL) == 0) {
+        sensor_data.soil_pct = atoi(data_buf);
+    } else if (strcmp(topic_buf, TOPIC_BATTERY) == 0) {
+        sensor_data.battery_v = strtof(data_buf, NULL);
+    } else if (strcmp(topic_buf, TOPIC_STATUS) == 0) {
+        sensor_data.outdoor_online = (strcmp(data_buf, "online") == 0);
+    }
+
+    xSemaphoreGive(data_mutex);
+}
+
+static void mqtt_event_handler(void *args, esp_event_base_t base,
+                               int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+    esp_mqtt_client_handle_t client = event->client;
+
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT connected, subscribing to outdoor topics");
+        esp_mqtt_client_subscribe(client, "home/outdoor/#", 1);
+        break;
+
+    case MQTT_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "MQTT disconnected");
+        break;
+
+    case MQTT_EVENT_DATA:
+        parse_mqtt_data(event->topic, event->topic_len,
+                        event->data, event->data_len);
+        break;
+
+    case MQTT_EVENT_ERROR:
+        ESP_LOGE(TAG, "MQTT error type: %d", event->error_handle->error_type);
+        break;
+
+    default:
+        break;
+    }
+}
+
+static esp_mqtt_client_handle_t mqtt_start(void)
+{
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker = {
+            .address.uri = CONFIG_BROKER_URL,
+            .verification.certificate = (const char *)mqtt_server_pem_start,
+        },
+        .credentials = {
+            .username = CONFIG_MQTT_USERNAME,
+            .authentication.password = CONFIG_MQTT_PASSWORD,
+            .client_id = "indoor-display-node",
+        },
+        .session = {
+            .last_will = {
+                .topic   = "home/indoor/status",
+                .msg     = "display-node-offline",
+                .msg_len = 20,
+                .qos     = 1,
+                .retain  = 1,
+            },
+            .keepalive = 30,
+        },
+    };
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_start(client);
+
+    /* Publish display node status */
+    /* (The client will publish once connected via the event handler) */
+
+    return client;
+}
+
+/* ──────────────────────────────────────────────
+ * OLED display rendering task
+ * ────────────────────────────────────────────── */
+
+static void oled_init(void)
+{
+    /* Configure I2C master bus */
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = I2C_NUM_0,
+        .sda_io_num = I2C_SDA_GPIO,
+        .scl_io_num = I2C_SCL_GPIO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t bus_handle;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus_handle));
+
+    ssd1306_init(&oled, bus_handle, SSD1306_I2C_ADDR);
+}
+
+static void render_display(void)
+{
+    sensor_data_t local;
+
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+    memcpy(&local, &sensor_data, sizeof(sensor_data_t));
+    xSemaphoreGive(data_mutex);
+
+    ssd1306_clear(&oled);
+
+    /* ── Header ── */
+    ssd1306_text(&oled, 0, 0, "OUTDOOR SENSOR NODE");
+    ssd1306_hline(&oled, 0, 9, 128, true);
+
+    /* ── Sensor values ── */
+    char line[24];
+
+    snprintf(line, sizeof(line), "Temp:  %.1f C", local.temperature);
+    ssd1306_text(&oled, 0, 12, line);
+
+    snprintf(line, sizeof(line), "Humid: %.1f %%", local.humidity);
+    ssd1306_text(&oled, 0, 22, line);
+
+    snprintf(line, sizeof(line), "Soil:  %d %%", local.soil_pct);
+    ssd1306_text(&oled, 0, 32, line);
+
+    snprintf(line, sizeof(line), "Batt:  %.2f V", local.battery_v);
+    ssd1306_text(&oled, 0, 42, line);
+
+    /* ── Status line ── */
+    ssd1306_hline(&oled, 0, 52, 128, true);
+
+    /* Time since last update */
+    if (local.last_update_us > 0) {
+        int64_t elapsed_sec = (esp_timer_get_time() - local.last_update_us) / 1000000;
+        if (elapsed_sec < 60) {
+            snprintf(line, sizeof(line), "Upd: %llds ago", (long long)elapsed_sec);
+        } else {
+            snprintf(line, sizeof(line), "Upd: %lldm ago", (long long)(elapsed_sec / 60));
+        }
+    } else {
+        snprintf(line, sizeof(line), "Upd: waiting...");
+    }
+    ssd1306_text(&oled, 0, 55, line);
+
+    /* Connection indicator (right side of status line) */
+    const char *status = local.outdoor_online ? "ON" : "OFF";
+    ssd1306_text(&oled, 100, 55, status);
+
+    ssd1306_update(&oled);
+}
+
+static void display_task(void *arg)
+{
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
+    while (1) {
+        render_display();
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(1000));  /* Refresh once per second */
+    }
+}
+
+/* ──────────────────────────────────────────────
+ * HTTP web dashboard
+ * ────────────────────────────────────────────── */
+
+static esp_err_t dashboard_handler(httpd_req_t *req)
+{
+    sensor_data_t local;
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+    memcpy(&local, &sensor_data, sizeof(sensor_data_t));
+    xSemaphoreGive(data_mutex);
+
+    int64_t elapsed_sec = 0;
+    if (local.last_update_us > 0) {
+        elapsed_sec = (esp_timer_get_time() - local.last_update_us) / 1000000;
+    }
+
+    /* Build HTML response */
+    char html[1024];
+    int len = snprintf(html, sizeof(html),
+        "<!DOCTYPE html>"
+        "<html><head>"
+        "<meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv='refresh' content='5'>"
+        "<title>Sensor Dashboard</title>"
+        "<style>"
+        "body{font-family:sans-serif;max-width:500px;margin:40px auto;padding:0 20px;"
+        "background:#1a1a2e;color:#e0e0e0;}"
+        "h1{color:#e94560;text-align:center;}"
+        ".card{background:#16213e;border-radius:8px;padding:16px;margin:12px 0;}"
+        ".label{color:#888;font-size:0.85em;}"
+        ".value{font-size:1.8em;font-weight:bold;color:#0f3460;}"
+        ".value.temp{color:#e94560;}"
+        ".value.humid{color:#00b4d8;}"
+        ".value.soil{color:#06d6a0;}"
+        ".value.batt{color:#ffd166;}"
+        ".status{text-align:center;padding:8px;border-radius:4px;margin-top:12px;}"
+        ".online{background:#06d6a0;color:#000;}"
+        ".offline{background:#e94560;color:#fff;}"
+        "</style></head><body>"
+        "<h1>Outdoor Sensor</h1>"
+        "<div class='card'>"
+        "<div class='label'>Temperature</div>"
+        "<div class='value temp'>%.1f &deg;C</div></div>"
+        "<div class='card'>"
+        "<div class='label'>Humidity</div>"
+        "<div class='value humid'>%.1f %%</div></div>"
+        "<div class='card'>"
+        "<div class='label'>Soil Moisture</div>"
+        "<div class='value soil'>%d %%</div></div>"
+        "<div class='card'>"
+        "<div class='label'>Battery</div>"
+        "<div class='value batt'>%.2f V</div></div>"
+        "<div class='status %s'>Outdoor node: %s</div>"
+        "<div class='card'><div class='label'>Last update: %lld seconds ago</div></div>"
+        "</body></html>",
+        local.temperature, local.humidity, local.soil_pct, local.battery_v,
+        local.outdoor_online ? "online" : "offline",
+        local.outdoor_online ? "ONLINE" : "OFFLINE",
+        (long long)elapsed_sec
+    );
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html, len);
+    return ESP_OK;
+}
+
+static httpd_handle_t start_webserver(void)
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    httpd_handle_t server = NULL;
+
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_uri_t uri = {
+            .uri     = "/",
+            .method  = HTTP_GET,
+            .handler = dashboard_handler,
+        };
+        httpd_register_uri_handler(server, &uri);
+        ESP_LOGI(TAG, "HTTP dashboard started on port 80");
+    }
+    return server;
+}
+
+/* ──────────────────────────────────────────────
+ * OTA update task (checks periodically)
+ * ────────────────────────────────────────────── */
+
+static void ota_task(void *arg)
+{
+    /* Wait a bit after boot before first check */
+    vTaskDelay(pdMS_TO_TICKS(30000));
+
+    while (1) {
+        ESP_LOGI(TAG, "Checking for OTA update");
+
+        esp_http_client_config_t http_cfg = {
+            .url = CONFIG_FIRMWARE_UPGRADE_URL,
+            .timeout_ms = 10000,
+        };
+        esp_https_ota_config_t ota_cfg = {
+            .http_config = &http_cfg,
+        };
+
+        esp_err_t ret = esp_https_ota(&ota_cfg);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "OTA update successful, restarting");
+            esp_restart();
+        } else {
+            ESP_LOGI(TAG, "No OTA update available: %s", esp_err_to_name(ret));
+        }
+
+        /* Wait for configured interval */
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_OTA_CHECK_INTERVAL_MIN * 60 * 1000));
+    }
+}
+
+/* ──────────────────────────────────────────────
+ * Main application
+ * ────────────────────────────────────────────── */
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "=== Indoor Display Node starting ===");
+
+    /* Initialize NVS */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    /* Mark OTA partition as valid */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(TAG, "First boot after OTA, marking firmware as valid");
+            esp_ota_mark_app_valid_cancel_rollback();
+        }
+    }
+
+    /* Create data mutex */
+    data_mutex = xSemaphoreCreateMutex();
+
+    /* Initialize OLED */
+    oled_init();
+    ssd1306_clear(&oled);
+    ssd1306_text(&oled, 10, 28, "Connecting...");
+    ssd1306_update(&oled);
+
+    /* Connect to Wi-Fi */
+    if (!wifi_init_and_connect()) {
+        ESP_LOGE(TAG, "Wi-Fi connection failed");
+        ssd1306_clear(&oled);
+        ssd1306_text(&oled, 10, 28, "WiFi FAILED");
+        ssd1306_update(&oled);
+        /* Will keep retrying via event handler */
+    }
+
+    /* Sync time via SNTP */
+    time_sync_init();
+
+    /* Start MQTT */
+    mqtt_start();
+
+    /* Start HTTP dashboard */
+    start_webserver();
+
+    /* Start display update task */
+    xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 5, NULL, 1);
+
+    /* Start OTA check task */
+    xTaskCreatePinnedToCore(ota_task, "ota", 8192, NULL, 2, NULL, 0);
+
+    ESP_LOGI(TAG, "All services started");
+}
+```
+
+The indoor node runs four concurrent services: the MQTT client (managed by the ESP-MQTT library on its own task), the OLED display refresh task (1 Hz on core 1), the HTTP server (handled by the httpd component), and the OTA check task (runs on core 0, checks once per hour). All sensor data access goes through a mutex so that the display task, the HTTP handler, and the MQTT callback never corrupt each other's reads and writes.
+
+The web dashboard uses `<meta http-equiv='refresh' content='5'>` to auto-reload every 5 seconds. This avoids the need for JavaScript or WebSocket code. Anyone on the same network can open the ESP32's IP address in a browser and see live sensor readings.
+
+## Building and Deploying
+
+<InArticleAd />
+
+
+### Step 1: Set Up the MQTT Broker
+
+You can use any MQTT broker that supports TLS. [SiliconWit IoT](https://mqtt.siliconwit.io/) provides a broker for course projects, or choose one of these options:
+
+**HiveMQ Cloud (free tier):**
+
+<Steps>
+1. Create an account at [hivemq.com/cloud](https://www.hivemq.com/cloud/)
+2. Create a free cluster. Note the hostname (e.g., `abc123.s1.eu.hivemq.cloud`)
+3. Create credentials (username and password) under the "Access Management" tab
+4. Download the broker's CA certificate (or use the ISRG Root X1 certificate that Let's Encrypt provides)
+5. Your broker URL will be `mqtts://abc123.s1.eu.hivemq.cloud:8883`
+</Steps>
+
+**Local Mosquitto broker:**
+
+```bash
+# Install Mosquitto on Linux
+sudo apt install mosquitto mosquitto-clients
+
+# Generate self-signed certificates for TLS
+openssl req -new -x509 -days 365 -nodes \
+    -keyout mqtt_server.key -out mqtt_server.pem \
+    -subj "/CN=mqtt-broker"
+
+# Configure Mosquitto (/etc/mosquitto/conf.d/tls.conf)
+# listener 8883
+# cafile /path/to/mqtt_server.pem
+# certfile /path/to/mqtt_server.pem
+# keyfile /path/to/mqtt_server.key
+# allow_anonymous false
+# password_file /etc/mosquitto/passwd
+
+# Create a user
+sudo mosquitto_passwd -c /etc/mosquitto/passwd myuser
+
+# Restart Mosquitto
+sudo systemctl restart mosquitto
+```
+
+Place the CA certificate file (`mqtt_server.pem`) in the `server_certs/` directory of both projects.
+
+### Step 2: Build the Outdoor Sensor Node
+
+```bash
+# Navigate to the outdoor sensor node project
+cd outdoor_sensor_node
+
+# Set your Wi-Fi and MQTT credentials in sdkconfig.defaults
+# or run menuconfig:
+idf.py menuconfig
+# Go to: Outdoor Sensor Node Configuration
+# Set broker URL, username, password, OTA URL
+
+# Build
+idf.py build
+
+# Flash (connect the outdoor ESP32 via USB)
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+### Step 3: Build the Indoor Display Node
+
+```bash
+# Navigate to the indoor display node project
+cd indoor_display_node
+
+# Configure
+idf.py menuconfig
+
+# Build
+idf.py build
+
+# Flash (connect the indoor ESP32 via USB)
+idf.py -p /dev/ttyUSB1 flash monitor
+```
+
+### Step 4: Host the OTA Firmware Server
+
+Use Python's built-in HTTP server to serve firmware binaries for OTA updates. Both nodes check this server for new firmware.
+
+```bash
+# Create a directory for firmware binaries
+mkdir -p ~/firmware_server
+cp outdoor_sensor_node/build/outdoor_sensor_node.bin ~/firmware_server/
+cp indoor_display_node/build/indoor_display_node.bin ~/firmware_server/
+
+# Start the HTTP server
+cd ~/firmware_server
+python3 -m http.server 8070
+```
+
+When you rebuild a project with changes, copy the new binary to this directory. The next time a node checks for an OTA update, it will download and install the new firmware.
+
+### Step 5: Verify End-to-End
+
+<Steps>
+1. Power on the indoor display node via USB. The OLED should show "Connecting..." and then switch to the sensor display layout once Wi-Fi and MQTT are connected
+2. Power on the outdoor sensor node with batteries. Watch the serial monitor (if connected) to confirm it reads sensors, connects to Wi-Fi, publishes to MQTT, and enters deep sleep
+3. Within a few seconds, the indoor OLED should display the temperature, humidity, soil moisture, and battery voltage
+4. Open a browser and navigate to the indoor node's IP address (shown in the serial log). The web dashboard should display the same values
+5. Wait 5 minutes for the next outdoor node wake cycle. The display should update and the "last update" counter should reset
+6. Test the last will: disconnect the outdoor node's battery. After the MQTT keep-alive timeout (15 seconds), the status on the display should change from "ON" to "OFF"
+</Steps>
+
+### Testing with MQTT Command-Line Tools
+
+You can also verify the MQTT topics using `mosquitto_sub`:
+
+```bash
+# Subscribe to all outdoor topics (use your broker's hostname and credentials)
+mosquitto_sub -h abc123.s1.eu.hivemq.cloud -p 8883 \
+    --cafile mqtt_server.pem \
+    -u myuser -P mypassword \
+    -t "home/outdoor/#" -v
+```
+
+You should see messages like:
+
+```
+home/outdoor/status online
+home/outdoor/temperature 23.5
+home/outdoor/humidity 61.2
+home/outdoor/soil 42
+home/outdoor/battery 3.12
+```
+
+## Production Readiness Checklist
+
+<InArticleAd />
+
+
+Before deploying this system in a real environment (garden, greenhouse, rooftop), review each item in this checklist. The capstone code already handles many of these, but some require configuration or hardware decisions beyond the firmware.
+
+### Watchdog and Recovery
+
+| Item | Status in Capstone Code | Notes |
+|------|------------------------|-------|
+| Task watchdog on main task | Yes (both nodes) | Outdoor: 30s, indoor: 60s |
+| Wi-Fi reconnection | Yes (event handler retries) | Outdoor: 5 retries then sleep. Indoor: 10 retries |
+| MQTT auto-reconnect | Yes (ESP-MQTT library default) | Library reconnects automatically on disconnect |
+| Sensor read failure handling | Yes (DHT22 retry, error values) | Publishes -999 if sensor fails, so dashboard shows something is wrong |
+| Last will message | Yes (both nodes) | Broker publishes offline status if node disconnects ungracefully |
+
+### OTA and Firmware Safety
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Dual OTA partitions | Yes (partition table config) | Factory + OTA_0 + OTA_1 |
+| Rollback on failed boot | Yes (`esp_ota_mark_app_valid`) | New firmware must boot successfully or bootloader reverts |
+| Version comparison before OTA | Partial | The `esp_https_ota` function checks the binary header. For strict version comparison, add a version endpoint on the OTA server |
+| OTA over TLS | Configurable | Use `https://` URL and embed the server certificate |
+
+### Power and Battery
+
+| Item | Notes |
+|------|-------|
+| Deep sleep current | Measure with a multimeter. ESP32 DevKitC has onboard USB-UART chip that draws extra current. For production, use a bare ESP32 module |
+| Battery voltage monitoring | Included in firmware. Set a low-battery threshold (e.g., 2.2V for 2x AA) and publish a warning |
+| Power supply decoupling | Add a 100uF capacitor near the ESP32 VIN pin to handle Wi-Fi transmit current spikes |
+| Sensor power gating | For even lower sleep current, power the DHT22 and soil sensor through a GPIO or MOSFET so they draw zero current during sleep |
+
+### Data Integrity and Storage
+
+| Item | Notes |
+|------|-------|
+| NVS wear leveling | The ESP-IDF NVS library handles wear leveling automatically. Avoid writing to NVS on every wake cycle; use RTC memory for counters |
+| Retained messages | All sensor topics use retained messages so that a rebooted subscriber gets the latest data immediately |
+| Message ordering | QoS 1 guarantees delivery but not strict ordering. For sensor data this is acceptable because each message is timestamped by topic |
+
+### Security
+
+| Item | Notes |
+|------|-------|
+| TLS for MQTT | Configured in both nodes. Verify the broker certificate is correct |
+| Flash encryption | Enable in development mode first (`idf.py menuconfig`, Security Features). This prevents reading firmware from the flash chip |
+| Secure boot v2 | Prevents flashing unauthorized firmware. Enable after flash encryption is working. See Lesson 7 for details |
+| MQTT credentials | Stored in NVS via menuconfig. For production, use per-device certificates (X.509 client authentication) instead of shared passwords |
+
+### Enclosure and Environment
+
+| Item | Notes |
+|------|-------|
+| Weatherproof enclosure | Outdoor node needs an IP65 or better enclosure. Route the DHT22 sensor outside the enclosure through a vent |
+| Antenna placement | Keep the ESP32 antenna away from metal surfaces and battery packs. Orient it vertically for best range |
+| Temperature range | The ESP32 operates from -40 to 85 degrees Celsius. Batteries are the limiting factor; lithium cells perform better in cold weather than alkaline |
+
+## Exercises
+
+<InArticleAd />
+
+
+<CardGrid>
+<Card title="Exercise 1: Add a Third Node" icon="puzzle">
+Add a second outdoor sensor node (e.g., a different room or a balcony) that publishes to `home/balcony/temperature`, `home/balcony/humidity`, etc. Modify the indoor display node to cycle between outdoor and balcony readings every 3 seconds on the OLED, and add a second page to the web dashboard. You will need to subscribe to `home/+/temperature` using the MQTT single-level wildcard.
+</Card>
+
+<Card title="Exercise 2: Historical Data Logging" icon="puzzle">
+Add a circular buffer in the indoor node's PSRAM (or regular RAM if no PSRAM) that stores the last 24 hours of temperature readings (one per 5-minute cycle = 288 entries). Serve a `/history` endpoint on the HTTP server that returns the buffer as a JSON array. Bonus: render a simple ASCII chart or a sparkline on the OLED showing the temperature trend over the last few hours.
+</Card>
+
+<Card title="Exercise 3: Alert Notifications" icon="puzzle">
+Add a threshold check in the indoor display node: if soil moisture drops below 20% or battery drops below 2.3V, publish an alert to `home/outdoor/alert` with QoS 2. Set up a phone app (such as MQTT Dashboard for Android or MQTTool for iOS) that subscribes to this alert topic and shows a push notification. Flash an indicator on the OLED when an alert is active.
+</Card>
+
+<Card title="Exercise 4: Encrypted Configuration" icon="puzzle">
+Store the Wi-Fi SSID, password, and MQTT credentials in NVS instead of hardcoding them in sdkconfig. Write a provisioning mode that starts a BLE GATT server (from Lesson 6) on the first boot, allowing you to configure credentials from a phone app. Once configured, the node reboots into normal operation. This removes the need to recompile firmware to change networks.
+</Card>
+</CardGrid>
+
+## Summary
+
+<InArticleAd />
+
+
+This capstone brought together every major topic from the course. The outdoor sensor node combines GPIO sensor reading (Lesson 2), Wi-Fi connectivity (Lesson 3), MQTT publishing with TLS (Lesson 5), deep sleep with RTC memory (Lesson 8), and OTA updates with rollback protection (Lesson 7). The indoor display node adds I2C peripheral driving, FreeRTOS multitasking, HTTP server hosting (Lesson 4), and continuous MQTT subscription. Together they form a complete IoT deployment that you can extend, harden, and adapt to real projects.
+
+The key architectural decisions: keeping MQTT topics flat and retained for simplicity, using QoS 1 as the pragmatic middle ground, separating the two nodes so each can be updated and debugged independently, and building in offline detection through last will messages. These patterns apply whether you are monitoring a garden, a greenhouse, an industrial process, or a building HVAC system.
+
+From here, the exercises point toward the kinds of extensions you will encounter in production: multi-node networks, historical data, alerting, and secure provisioning. Each of those builds directly on the foundation this course has established.
+
+<EmbeddedProgrammingEsp32Comments />
+
+
+
+<InArticleAd />
+<TawkWidget />
+<Copyright />

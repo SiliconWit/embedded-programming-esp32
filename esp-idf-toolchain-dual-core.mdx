@@ -1,0 +1,794 @@
+---
+title: "ESP-IDF Toolchain and Dual-Core Architecture"
+description: "Install ESP-IDF, configure menuconfig, understand partition tables, and explore the Xtensa dual-core FreeRTOS model. Build an RGB mood lamp where one core runs color animations and the other handles serial commands."
+contributors: "sam-macharia,lawrence-langat"
+pubDate: 2026-01-17
+tags: ["esp32", "esp-idf", "toolchain", "dual-core", "freertos", "xtensa"]
+excerpt: "Set up the ESP-IDF development environment from scratch. Understand menuconfig, partition tables, and how the ESP32's dual-core Xtensa processor runs FreeRTOS SMP. Build an RGB mood lamp that splits work across both cores."
+heroImage: "https://cdn.siliconwit.com/education/embedded-programming-esp32/ESP32-WROOM-Pinout.png"
+---
+
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import UniversalContentContributors from '../../../../components/UniversalContentContributors.astro';
+import InArticleAd from '../../../../components/InArticleAd.astro';
+import Copyright from '../../../../components/Copyright.astro';
+import BionicText from '../../../../components/BionicText.astro';
+import TailwindWrapper from '../../../../components/TailwindWrapper.jsx';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/starlight/components';
+
+<UniversalContentContributors 
+  contributors={frontmatter.contributors}
+/>
+
+
+
+import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
+
+The ESP32 has two Xtensa LX6 cores, and in this first lesson you will put both of them to work. You will install ESP-IDF, learn how menuconfig and partition tables shape your firmware, and build an RGB mood lamp that runs smooth color animations on one core while the other core listens for serial commands to change patterns in real time. #ESP32 #ESPIDF #DualCore
+
+## What We Are Building
+
+<Card title="RGB Mood Lamp" icon="star">
+A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS system tasks and serial command parsing, while Core 1 runs continuous HSV color animations on an RGB LED using LEDC PWM. Send commands like "red", "rainbow", or "pulse" over the serial monitor to switch modes instantly.
+</Card>
+
+**Project specifications:**
+
+| Parameter | Value |
+|-----------|-------|
+| MCU | ESP32-WROOM-32 (dual-core Xtensa LX6, 240 MHz) |
+| Framework | ESP-IDF v5.x |
+| LED Output | Common-cathode RGB LED, 3 GPIOs via LEDC PWM |
+| Control | Serial (UART0, 115200 baud) |
+| Core 0 Task | Serial command parser, FreeRTOS system tasks |
+| Core 1 Task | HSV color animation loop (rainbow, pulse, solid) |
+| Current-Limiting Resistors | 3x 220 ohm (one per color channel) |
+| Power | USB (5V from DevKitC) |
+
+### Bill of Materials
+
+| Ref | Component | Quantity | Notes |
+|-----|-----------|----------|-------|
+| U1 | ESP32 DevKitC | 1 | Any ESP32 dev board with USB |
+| D1 | RGB LED (common cathode) | 1 | 4-pin, common cathode |
+| R1, R2, R3 | 220 ohm resistor | 3 | One per color channel |
+| | Breadboard + jumper wires | 1 set | |
+| | USB cable (Micro-B or Type-C) | 1 | Depends on DevKitC version |
+
+## Installing ESP-IDF
+
+<InArticleAd />
+
+
+<Tabs>
+<TabItem label="Linux (Ubuntu/Debian)">
+```bash
+# Install prerequisites
+sudo apt update
+sudo apt install git wget flex bison gperf python3 python3-pip \
+    python3-venv cmake ninja-build ccache libffi-dev libssl-dev \
+    dfu-util libusb-1.0-0
+
+# Clone ESP-IDF v5.x
+mkdir -p ~/esp
+cd ~/esp
+git clone -b v5.4 --recursive https://github.com/espressif/esp-idf.git
+
+# Run the install script (downloads the Xtensa toolchain)
+cd ~/esp/esp-idf
+./install.sh esp32
+
+# Source the export script (do this in every new terminal)
+. ~/esp/esp-idf/export.sh
+
+# Verify
+idf.py --version
+```
+
+Add the export line to your shell profile so it runs automatically:
+
+```bash
+echo '. ~/esp/esp-idf/export.sh' >> ~/.bashrc
+```
+</TabItem>
+<TabItem label="macOS">
+```bash
+# Install prerequisites via Homebrew
+brew install cmake ninja dfu-util python3
+
+# Clone ESP-IDF v5.x
+mkdir -p ~/esp
+cd ~/esp
+git clone -b v5.4 --recursive https://github.com/espressif/esp-idf.git
+
+# Run the install script
+cd ~/esp/esp-idf
+./install.sh esp32
+
+# Source the export script
+. ~/esp/esp-idf/export.sh
+
+# Verify
+idf.py --version
+```
+
+Add to your shell profile:
+
+```bash
+echo '. ~/esp/esp-idf/export.sh' >> ~/.zprofile
+```
+</TabItem>
+<TabItem label="Windows">
+```
+1. Download the ESP-IDF Tools Installer from:
+   https://dl.espressif.com/dl/esp-idf/
+
+2. Run the installer. It installs Git, Python, CMake, Ninja,
+   and the Xtensa toolchain automatically.
+
+3. Choose ESP-IDF v5.4 when prompted.
+
+4. After installation, open "ESP-IDF Command Prompt" from
+   the Start Menu. This shell has all paths set up.
+
+5. Verify:
+   idf.py --version
+```
+
+The installer creates a desktop shortcut for the ESP-IDF PowerShell and Command Prompt. Always use one of these when building ESP-IDF projects.
+</TabItem>
+</Tabs>
+
+### USB Serial Driver
+
+Most ESP32 DevKitC boards use a CP2102 or CH340 USB-to-serial chip. On Linux, add your user to the `dialout` group so you can access serial ports without root:
+
+```bash
+sudo usermod -aG dialout $USER
+# Log out and back in for the group change to take effect
+```
+
+On macOS and Windows, install the appropriate driver from the chip manufacturer if the board does not appear as a serial port.
+
+## ESP-IDF Project Structure
+
+<InArticleAd />
+
+
+Every ESP-IDF project follows a component-based structure. The build system (CMake + Ninja) finds components by scanning directories and linking them automatically.
+
+<FileTree>
+- rgb-mood-lamp/
+  - CMakeLists.txt
+  - main/
+    - CMakeLists.txt
+    - main.c
+  - sdkconfig
+  - sdkconfig.defaults
+  - build/
+</FileTree>
+
+The top-level `CMakeLists.txt` is minimal. It points to the ESP-IDF framework and declares the project name:
+
+```cmake
+# Top-level CMakeLists.txt
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(rgb-mood-lamp)
+```
+
+The `main/CMakeLists.txt` registers source files for the main component:
+
+```cmake
+# main/CMakeLists.txt
+idf_component_register(SRCS "main.c"
+                       INCLUDE_DIRS ".")
+```
+
+ESP-IDF treats every directory with a `CMakeLists.txt` calling `idf_component_register()` as a component. The `main` component is special: it is always included and serves as the application entry point. You can add more components by creating subdirectories under a `components/` folder at the project root.
+
+## Menuconfig
+
+<InArticleAd />
+
+
+ESP-IDF uses Kconfig (borrowed from the Linux kernel) to manage build-time configuration. Every driver, protocol stack, and system setting exposes options through this system, and all choices are saved into a single `sdkconfig` file.
+
+```bash
+idf.py menuconfig
+```
+
+This opens a terminal-based menu. Key settings to know:
+
+| Menu Path | Setting | Typical Value |
+|-----------|---------|---------------|
+| Serial flasher config | Flash size | 4 MB |
+| Component config > ESP System Settings | CPU frequency | 240 MHz |
+| Partition Table | Partition Table | Single factory app (no OTA) |
+| Component config > FreeRTOS | Tick rate (Hz) | 1000 |
+| Component config > ESP System Settings | Main task stack size | 3584 |
+
+When you change a setting, menuconfig writes the result into `sdkconfig`. This file is auto-generated and should generally not be edited by hand. If you want to set defaults for version control, put your overrides into `sdkconfig.defaults` instead. The build system reads `sdkconfig.defaults` first, then applies any existing `sdkconfig` on top.
+
+## Partition Table
+
+<InArticleAd />
+
+
+The ESP32's flash is divided into partitions. The partition table itself lives at offset 0x8000 and tells the bootloader where to find the application firmware, NVS storage, and any other data regions.
+
+The default "Single factory app, no OTA" partition table looks like this:
+
+| Name | Type | SubType | Offset | Size |
+|------|------|---------|--------|------|
+| nvs | data | nvs | 0x9000 | 24 KB |
+| phy_init | data | phy | 0xf000 | 4 KB |
+| factory | app | factory | 0x10000 | 1 MB |
+
+For projects that need OTA updates or filesystem storage, you create a custom `partitions.csv`:
+
+```csv
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 1M,
+storage,  data, spiffs,  ,        512K,
+```
+
+Then select "Custom partition table CSV" in menuconfig and point it to your file. View the compiled partition table at any time:
+
+```bash
+idf.py partition-table
+```
+
+This prints the parsed table with offsets and sizes, which is useful for verifying that partitions do not overlap.
+
+## Dual-Core Architecture
+
+<InArticleAd />
+
+
+The ESP32 contains two Xtensa LX6 cores running at up to 240 MHz. Espressif names them PRO_CPU (core 0) and APP_CPU (core 1). ESP-IDF runs a symmetric multiprocessing (SMP) variant of FreeRTOS across both cores, meaning any task can run on either core unless you explicitly pin it.
+
+### How Boot and System Tasks Are Distributed
+
+At startup, the bootloader runs on PRO_CPU. After initialization, ESP-IDF creates several system tasks:
+
+| Task | Core | Purpose |
+|------|------|---------|
+| main (app_main) | PRO_CPU (0) | Your application entry point |
+| IDLE0 | PRO_CPU (0) | Idle task for core 0 |
+| IDLE1 | APP_CPU (1) | Idle task for core 1 |
+| esp_timer | PRO_CPU (0) | Software timer callbacks |
+| Wi-Fi task | PRO_CPU (0) | Wi-Fi protocol stack |
+| ipc0, ipc1 | 0, 1 | Inter-processor call tasks |
+
+The `app_main()` function runs as a FreeRTOS task on core 0 with a default stack of 3584 bytes. You can create additional tasks and pin them to specific cores or leave them floating.
+
+### Task Creation and Core Pinning
+
+The standard FreeRTOS `xTaskCreate()` function lets the scheduler place the task on any available core. To pin a task to a specific core, use the ESP-IDF extension:
+
+```c
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+void my_task(void *pvParameters) {
+    while (1) {
+        /* This task runs only on core 1 */
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void app_main(void) {
+    xTaskCreatePinnedToCore(
+        my_task,          /* Task function */
+        "my_task",        /* Name (for debugging) */
+        4096,             /* Stack size in bytes */
+        NULL,             /* Parameter */
+        5,                /* Priority (higher = more urgent) */
+        NULL,             /* Task handle (optional) */
+        1                 /* Core ID: 0 = PRO_CPU, 1 = APP_CPU */
+    );
+}
+```
+
+Pass `tskNO_AFFINITY` as the last argument to let the scheduler decide which core runs the task. This is useful for general-purpose work, but for real-time or peripheral-bound tasks, pinning gives you predictable timing by avoiding contention with system tasks on core 0.
+
+### When to Pin Tasks
+
+Pin a task when it has strict timing requirements (motor control, audio sampling), when it accesses hardware that is not thread-safe, or when you want to isolate it from Wi-Fi and Bluetooth stack activity on core 0. Leave tasks unpinned when they are not latency-sensitive and can benefit from load balancing.
+
+## LEDC PWM for RGB LED
+
+<InArticleAd />
+
+
+The ESP32's LEDC (LED Control) peripheral provides up to 16 independent PWM channels, split between high-speed and low-speed groups. Each channel is driven by a configurable timer. For an RGB LED, we need three channels sharing the same timer so all three colors operate at the same PWM frequency.
+
+### Timer and Channel Configuration
+
+LEDC configuration is a two-step process: configure a timer (sets frequency and resolution), then configure channels (binds a GPIO to that timer with an initial duty cycle).
+
+```c
+#include "driver/ledc.h"
+
+#define LEDC_TIMER       LEDC_TIMER_0
+#define LEDC_MODE        LEDC_LOW_SPEED_MODE
+#define LEDC_FREQUENCY   5000    /* 5 kHz PWM */
+#define LEDC_RESOLUTION  LEDC_TIMER_8_BIT  /* 0-255 duty range */
+
+#define GPIO_RED    25
+#define GPIO_GREEN  26
+#define GPIO_BLUE   27
+
+void ledc_init(void) {
+    /* Configure the timer */
+    ledc_timer_config_t timer_conf = {
+        .speed_mode      = LEDC_MODE,
+        .duty_resolution = LEDC_RESOLUTION,
+        .timer_num       = LEDC_TIMER,
+        .freq_hz         = LEDC_FREQUENCY,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&timer_conf);
+
+    /* Configure three channels: red, green, blue */
+    int gpios[3] = {GPIO_RED, GPIO_GREEN, GPIO_BLUE};
+    for (int ch = 0; ch < 3; ch++) {
+        ledc_channel_config_t ch_conf = {
+            .speed_mode = LEDC_MODE,
+            .channel    = (ledc_channel_t)ch,  /* LEDC_CHANNEL_0, 1, 2 */
+            .timer_sel  = LEDC_TIMER,
+            .intr_type  = LEDC_INTR_DISABLE,
+            .gpio_num   = gpios[ch],
+            .duty       = 0,
+            .hpoint     = 0,
+        };
+        ledc_channel_config(&ch_conf);
+    }
+}
+```
+
+To set a color, write duty values to each channel:
+
+```c
+void set_rgb(uint8_t r, uint8_t g, uint8_t b) {
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_0, r);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_0);
+
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_1, g);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_1);
+
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_2, b);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_2);
+}
+```
+
+The `ledc_set_duty()` call writes to a shadow register. The value only takes effect when you call `ledc_update_duty()`, which transfers the shadow value to the active register at the next timer overflow. This prevents glitches when updating multiple channels.
+
+## HSV to RGB Conversion
+
+<InArticleAd />
+
+
+RGB values are awkward for animations. To cycle smoothly through the color spectrum, it is much easier to work in HSV (Hue, Saturation, Value) space and convert to RGB for output. Hue sweeps through colors (0 = red, 120 = green, 240 = blue), saturation controls how vivid the color is, and value controls brightness.
+
+```c
+/* Convert HSV to RGB. h: 0-360, s: 0-255, v: 0-255 */
+void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
+                uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (s == 0) {
+        *r = *g = *b = v;
+        return;
+    }
+
+    uint8_t region = h / 60;
+    uint8_t remainder = (h - (region * 60)) * 255 / 60;
+
+    uint8_t p = (v * (255 - s)) >> 8;
+    uint8_t q = (v * (255 - ((s * remainder) >> 8))) >> 8;
+    uint8_t t = (v * (255 - ((s * (255 - remainder)) >> 8))) >> 8;
+
+    switch (region) {
+        case 0:  *r = v; *g = t; *b = p; break;
+        case 1:  *r = q; *g = v; *b = p; break;
+        case 2:  *r = p; *g = v; *b = t; break;
+        case 3:  *r = p; *g = q; *b = v; break;
+        case 4:  *r = t; *g = p; *b = v; break;
+        default: *r = v; *g = p; *b = q; break;
+    }
+}
+```
+
+With this function, a rainbow animation is just a loop that increments hue from 0 to 359 and converts each value to RGB. No manual color blending or lookup tables needed.
+
+## Complete Firmware
+
+<InArticleAd />
+
+
+Here is the complete `main.c` for the RGB mood lamp. Core 1 runs the color animation loop, and core 0 runs a serial command parser. A FreeRTOS queue carries mode-change commands from the parser task to the animation task.
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/ledc.h"
+#include "esp_log.h"
+
+static const char *TAG = "mood_lamp";
+
+/* ---------- Pin and PWM configuration ---------- */
+
+#define GPIO_RED    25
+#define GPIO_GREEN  26
+#define GPIO_BLUE   27
+
+#define LEDC_TIMER       LEDC_TIMER_0
+#define LEDC_MODE        LEDC_LOW_SPEED_MODE
+#define LEDC_FREQUENCY   5000
+#define LEDC_RESOLUTION  LEDC_TIMER_8_BIT   /* 0-255 */
+
+/* ---------- Animation modes ---------- */
+
+typedef enum {
+    MODE_OFF,
+    MODE_RED,
+    MODE_GREEN,
+    MODE_BLUE,
+    MODE_RAINBOW,
+    MODE_PULSE,
+} led_mode_t;
+
+/* Queue for sending mode changes from parser to animation task */
+static QueueHandle_t mode_queue;
+
+/* ---------- LEDC helpers ---------- */
+
+static void ledc_init(void)
+{
+    ledc_timer_config_t timer_conf = {
+        .speed_mode      = LEDC_MODE,
+        .duty_resolution = LEDC_RESOLUTION,
+        .timer_num       = LEDC_TIMER,
+        .freq_hz         = LEDC_FREQUENCY,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&timer_conf);
+
+    int gpios[3] = {GPIO_RED, GPIO_GREEN, GPIO_BLUE};
+    for (int ch = 0; ch < 3; ch++) {
+        ledc_channel_config_t ch_conf = {
+            .speed_mode = LEDC_MODE,
+            .channel    = (ledc_channel_t)ch,
+            .timer_sel  = LEDC_TIMER,
+            .intr_type  = LEDC_INTR_DISABLE,
+            .gpio_num   = gpios[ch],
+            .duty       = 0,
+            .hpoint     = 0,
+        };
+        ledc_channel_config(&ch_conf);
+    }
+}
+
+static void set_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_0, r);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_0);
+
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_1, g);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_1);
+
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_2, b);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_2);
+}
+
+/* ---------- HSV to RGB ---------- */
+
+static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
+                        uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (s == 0) {
+        *r = *g = *b = v;
+        return;
+    }
+
+    uint8_t region = h / 60;
+    uint8_t remainder = (h - (region * 60)) * 255 / 60;
+
+    uint8_t p = (v * (255 - s)) >> 8;
+    uint8_t q = (v * (255 - ((s * remainder) >> 8))) >> 8;
+    uint8_t t = (v * (255 - ((s * (255 - remainder)) >> 8))) >> 8;
+
+    switch (region) {
+        case 0:  *r = v; *g = t; *b = p; break;
+        case 1:  *r = q; *g = v; *b = p; break;
+        case 2:  *r = p; *g = v; *b = t; break;
+        case 3:  *r = p; *g = q; *b = v; break;
+        case 4:  *r = t; *g = p; *b = v; break;
+        default: *r = v; *g = p; *b = q; break;
+    }
+}
+
+/* ---------- Animation task (Core 1) ---------- */
+
+static void animation_task(void *pvParameters)
+{
+    led_mode_t current_mode = MODE_RAINBOW;
+    uint16_t hue = 0;
+    uint8_t pulse_brightness = 0;
+    int8_t pulse_direction = 1;
+
+    ESP_LOGI(TAG, "Animation task running on core %d", xPortGetCoreID());
+
+    while (1) {
+        /* Check for mode changes (non-blocking) */
+        led_mode_t new_mode;
+        if (xQueueReceive(mode_queue, &new_mode, 0) == pdTRUE) {
+            current_mode = new_mode;
+            hue = 0;
+            pulse_brightness = 0;
+            pulse_direction = 1;
+            ESP_LOGI(TAG, "Mode changed to %d", current_mode);
+        }
+
+        uint8_t r = 0, g = 0, b = 0;
+
+        switch (current_mode) {
+            case MODE_OFF:
+                set_rgb(0, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+
+            case MODE_RED:
+                set_rgb(255, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+
+            case MODE_GREEN:
+                set_rgb(0, 255, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+
+            case MODE_BLUE:
+                set_rgb(0, 0, 255);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+
+            case MODE_RAINBOW:
+                hsv_to_rgb(hue, 255, 200, &r, &g, &b);
+                set_rgb(r, g, b);
+                hue = (hue + 1) % 360;
+                vTaskDelay(pdMS_TO_TICKS(20));  /* ~18 seconds per full cycle */
+                continue;
+
+            case MODE_PULSE: {
+                hsv_to_rgb(hue, 255, pulse_brightness, &r, &g, &b);
+                set_rgb(r, g, b);
+                int new_val = pulse_brightness + pulse_direction * 2;
+                if (new_val >= 255) { new_val = 255; pulse_direction = -1; }
+                if (new_val <= 0) {
+                    new_val = 0;
+                    pulse_direction = 1;
+                    hue = (hue + 30) % 360;  /* Shift color each pulse */
+                }
+                pulse_brightness = (uint8_t)new_val;
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+        }
+    }
+}
+
+/* ---------- Command parser task (Core 0) ---------- */
+
+static void str_tolower(char *s)
+{
+    for (; *s; s++) {
+        *s = tolower((unsigned char)*s);
+    }
+}
+
+static void parser_task(void *pvParameters)
+{
+    char line[64];
+
+    ESP_LOGI(TAG, "Parser task running on core %d", xPortGetCoreID());
+    printf("\nRGB Mood Lamp ready. Commands: red, green, blue, rainbow, pulse, off\n> ");
+    fflush(stdout);
+
+    while (1) {
+        /* Read a line from stdin (UART0) */
+        if (fgets(line, sizeof(line), stdin) != NULL) {
+            /* Strip newline */
+            line[strcspn(line, "\r\n")] = '\0';
+            str_tolower(line);
+
+            led_mode_t mode;
+            bool valid = true;
+
+            if (strcmp(line, "red") == 0) {
+                mode = MODE_RED;
+            } else if (strcmp(line, "green") == 0) {
+                mode = MODE_GREEN;
+            } else if (strcmp(line, "blue") == 0) {
+                mode = MODE_BLUE;
+            } else if (strcmp(line, "rainbow") == 0) {
+                mode = MODE_RAINBOW;
+            } else if (strcmp(line, "pulse") == 0) {
+                mode = MODE_PULSE;
+            } else if (strcmp(line, "off") == 0) {
+                mode = MODE_OFF;
+            } else {
+                valid = false;
+                printf("Unknown command: '%s'\n", line);
+                printf("Commands: red, green, blue, rainbow, pulse, off\n");
+            }
+
+            if (valid) {
+                xQueueSend(mode_queue, &mode, pdMS_TO_TICKS(100));
+                printf("OK: %s\n", line);
+            }
+            printf("> ");
+            fflush(stdout);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/* ---------- Entry point ---------- */
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "RGB Mood Lamp starting on ESP32");
+
+    /* Initialize LEDC PWM */
+    ledc_init();
+    set_rgb(0, 0, 0);
+
+    /* Create the mode queue (depth 4, each element is a led_mode_t) */
+    mode_queue = xQueueCreate(4, sizeof(led_mode_t));
+
+    /* Create the animation task, pinned to core 1 */
+    xTaskCreatePinnedToCore(
+        animation_task,
+        "animation",
+        4096,
+        NULL,
+        5,
+        NULL,
+        1       /* APP_CPU */
+    );
+
+    /* Create the parser task, pinned to core 0 */
+    xTaskCreatePinnedToCore(
+        parser_task,
+        "parser",
+        4096,
+        NULL,
+        5,
+        NULL,
+        0       /* PRO_CPU */
+    );
+
+    /* app_main can return; the tasks keep running */
+}
+```
+
+### How the Code Works
+
+The firmware creates two independent tasks that communicate through a FreeRTOS queue:
+
+1. **`animation_task` (Core 1):** Runs a tight loop that checks for mode changes via `xQueueReceive()` with zero timeout (non-blocking). Depending on the current mode, it either sets a solid color or computes the next animation frame using HSV conversion, then delays briefly before the next update.
+
+2. **`parser_task` (Core 0):** Blocks on `fgets()` waiting for serial input. When a line arrives, it strips whitespace, converts to lowercase, and matches against known commands. Valid commands are sent to the queue where the animation task picks them up.
+
+3. **`app_main()`:** Initializes the LEDC hardware, creates the queue, spawns both tasks, and returns. In ESP-IDF, `app_main()` itself is a FreeRTOS task, so returning from it simply deletes that task. The two pinned tasks continue running.
+
+## CMakeLists.txt Files
+
+<InArticleAd />
+
+
+### Top-Level CMakeLists.txt
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(rgb-mood-lamp)
+```
+
+### main/CMakeLists.txt
+
+```cmake
+idf_component_register(SRCS "main.c"
+                       INCLUDE_DIRS ".")
+```
+
+These two files are all the build system needs. ESP-IDF's CMake integration handles toolchain selection, compiler flags, linker scripts, and partition table generation automatically. If you add more source files, list them in the `SRCS` argument separated by spaces.
+
+## Building and Flashing
+
+<InArticleAd />
+
+
+<Steps>
+1. Create the project directory and files:
+   ```bash
+   mkdir -p rgb-mood-lamp/main
+   # Place the top-level CMakeLists.txt in rgb-mood-lamp/
+   # Place main/CMakeLists.txt and main/main.c in rgb-mood-lamp/main/
+   ```
+
+2. Set the target chip:
+   ```bash
+   cd rgb-mood-lamp
+   idf.py set-target esp32
+   ```
+   This configures the build system for the ESP32 (as opposed to ESP32-S2, ESP32-C3, etc.) and generates an initial `sdkconfig`.
+
+3. Build the project:
+   ```bash
+   idf.py build
+   ```
+   The first build takes a few minutes because it compiles the entire ESP-IDF framework. Subsequent builds are incremental and much faster.
+
+4. Connect the ESP32 DevKitC via USB and flash:
+   ```bash
+   idf.py -p /dev/ttyUSB0 flash monitor
+   ```
+   On macOS, the port is usually `/dev/cu.usbserial-XXXX` or `/dev/cu.SLAB_USBtoUART`. On Windows, use `COM3` or whichever port appears in Device Manager.
+
+5. The serial monitor opens automatically at 115200 baud. You should see the startup log followed by the prompt. Type `rainbow`, `red`, `pulse`, or any other command and press Enter.
+
+6. Press `Ctrl+]` to exit the serial monitor.
+</Steps>
+
+### Wiring the RGB LED
+
+Connect the common-cathode RGB LED to the ESP32 DevKitC:
+
+| LED Pin | Connection |
+|---------|------------|
+| Red anode | GPIO 25 through 220 ohm resistor |
+| Green anode | GPIO 26 through 220 ohm resistor |
+| Blue anode | GPIO 27 through 220 ohm resistor |
+| Common cathode | GND |
+
+Each resistor limits current to a safe level for both the LED and the ESP32 GPIO (which can source up to 40 mA per pin, though 12 mA is the recommended maximum for continuous use).
+
+## Exercises
+
+<InArticleAd />
+
+
+1. **Add a "breathe" mode.** Implement a new `MODE_BREATHE` that holds a single color (for example, warm white at hue 30) and slowly ramps brightness from 0 to 255 and back using the value parameter in HSV. Use a step delay of about 15 ms for a smooth 8-second breathing cycle.
+
+2. **Add speed control commands.** Accept "fast" and "slow" commands that change the animation delay. Store the delay in a shared variable protected by a mutex, or send it through a second queue. "fast" should halve the current delay, and "slow" should double it, clamped between 5 ms and 100 ms.
+
+3. **Print mode and core info on each change.** In the animation task, print the new mode name, the current core ID (`xPortGetCoreID()`), and the current tick count (`xTaskGetTickCount()`) every time a mode change is received. This helps verify that tasks are actually running on their pinned cores.
+
+4. **Add a "status" command.** When the user types "status", print the free heap size (`esp_get_free_heap_size()`), the number of running tasks (`uxTaskGetNumberOfTasks()`), and the system uptime in seconds (`esp_timer_get_time() / 1000000`). This exercises the ESP-IDF system API without affecting the animation loop.
+
+## Summary
+
+<InArticleAd />
+
+
+You installed ESP-IDF v5.x and set up the Xtensa toolchain. You learned how menuconfig stores build-time configuration in `sdkconfig`, how the partition table divides flash into regions, and how the ESP32's two Xtensa LX6 cores run FreeRTOS SMP. You built an RGB mood lamp that pins a color animation task to core 1 and a serial command parser to core 0, communicating through a FreeRTOS queue. The LEDC peripheral handles PWM generation for all three color channels, and HSV conversion provides smooth color cycling without manual blending.
+
+<EmbeddedProgrammingEsp32Comments />
+
+
+
+<InArticleAd />
+<TawkWidget />
+<Copyright />
