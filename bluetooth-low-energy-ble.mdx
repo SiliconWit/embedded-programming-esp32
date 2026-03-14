@@ -78,6 +78,27 @@ The key differences from Classic Bluetooth:
 
 BLE is organized into two major layers: GAP and GATT.
 
+```text
+ BLE Protocol Stack
+ ┌────────────────────────────────┐
+ │  Application (Your firmware)  │
+ ├────────────────────────────────┤
+ │  GAP         │  GATT          │
+ │  (Discovery, │  (Services,    │
+ │   Advertise) │   Read/Write)  │
+ ├──────────────┴────────────────┤
+ │   ATT (Attribute Protocol)    │
+ ├────────────────────────────────┤
+ │   L2CAP (Logical Link)        │
+ ├────────────────────────────────┤
+ │   Link Layer (LL)             │
+ │   40 channels, 2 MHz spacing  │
+ ├────────────────────────────────┤
+ │   Physical Layer (PHY)        │
+ │   2.4 GHz ISM, 1 Mbps        │
+ └────────────────────────────────┘
+```
+
 ### GAP: The Advertising and Connection Layer
 
 The Generic Access Profile (GAP) handles device discovery and connection establishment. A BLE device operates in one of several roles:
@@ -97,6 +118,30 @@ Once connected, data exchange follows the Generic Attribute Profile (GATT). GATT
 2. **Service**: a group of related data points, identified by a UUID. For example, the Environmental Sensing Service is UUID `0x181A`.
 3. **Characteristic**: a single data point within a service. Temperature is `0x2A6E`, Humidity is `0x2A6F`.
 4. **Descriptor**: metadata about a characteristic. The most important one is the Client Characteristic Configuration Descriptor (CCCD, UUID `0x2902`), which controls notifications.
+
+```text
+ BLE GATT Hierarchy
+ ┌─────────────────────────────────────────┐
+ │  Profile (Environmental Sensing)        │
+ │  ┌───────────────────────────────────┐  │
+ │  │  Service: ESS (UUID 0x181A)      │  │
+ │  │  ┌─────────────────────────────┐  │  │
+ │  │  │ Characteristic: Temperature │  │  │
+ │  │  │   UUID: 0x2A6E              │  │  │
+ │  │  │   Properties: Read, Notify  │  │  │
+ │  │  │   ┌───────────────────────┐ │  │  │
+ │  │  │   │ CCCD (0x2902)        │ │  │  │
+ │  │  │   │ Enable notifications │ │  │  │
+ │  │  │   └───────────────────────┘ │  │  │
+ │  │  └─────────────────────────────┘  │  │
+ │  │  ┌─────────────────────────────┐  │  │
+ │  │  │ Characteristic: Humidity    │  │  │
+ │  │  │   UUID: 0x2A6F              │  │  │
+ │  │  │   Properties: Read, Notify  │  │  │
+ │  │  └─────────────────────────────┘  │  │
+ │  └───────────────────────────────────┘  │
+ └─────────────────────────────────────────┘
+```
 
 Each characteristic has properties that define how it can be accessed: read, write, notify, or indicate. Our temperature and humidity characteristics will support read (client polls the value) and notify (server pushes updates automatically).
 

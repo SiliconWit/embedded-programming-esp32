@@ -87,6 +87,25 @@ HTTP follows a request/response model: the client asks, the server answers. That
 
 In MQTT, devices never talk directly to each other. Instead, they communicate through a central server called a **broker**. A device that has data sends (publishes) a message to a **topic**. A device that wants that data subscribes to the same topic. The broker routes messages from publishers to all matching subscribers.
 
+```text
+ MQTT Publish/Subscribe Model
+ ┌──────────┐                    ┌──────────┐
+ │  ESP32   │  PUBLISH           │  Phone   │
+ │  Sensor  ├──"home/garden/──>┌─┤  App     │
+ │  Node    │   moisture"      │ │ (MQTT    │
+ └──────────┘                  │ │ Dashboard│
+                  ┌────────┐   │ └──────────┘
+                  │  MQTT  │   │
+                  │ Broker │───┘ SUBSCRIBE
+                  │(Cloud) │───┐ "home/garden/#"
+                  └───┬────┘   │
+ ┌──────────┐         │       ┌┴─────────┐
+ │  ESP32   │  SUB    │       │ Laptop   │
+ │  Display │<────────┘       │ Script   │
+ │  Node    │ "home/garden/   └──────────┘
+ └──────────┘  moisture"
+```
+
 Topics are hierarchical strings separated by forward slashes. For example:
 
 ```
@@ -268,6 +287,21 @@ The `esp_mqtt_client_start()` function creates an internal task that manages the
 
 
 The free tier of HiveMQ Cloud requires TLS. Even if your broker allowed plain text, you should always use TLS for IoT devices that transmit over the internet. Without encryption, anyone on the network path can read your sensor data and inject commands.
+
+```text
+ MQTT over TLS Connection
+ ┌──────────┐          ┌───────────────┐
+ │  ESP32   │          │  MQTT Broker  │
+ │          │  TCP     │  (HiveMQ)     │
+ │  mbedTLS ├─────────>│  Port 8883    │
+ │  Client  │  TLS 1.2 │               │
+ │          │<─────────┤  Root CA:     │
+ │  CA cert │  Verify  │  ISRG X1     │
+ │ embedded │  chain   │               │
+ └──────────┘          └───────────────┘
+   Firmware embeds           Broker presents
+   root CA PEM file          server certificate
+```
 
 ### Obtaining the Root CA Certificate
 

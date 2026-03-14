@@ -117,6 +117,24 @@ home/outdoor/status         →  "online" / "outdoor-node-offline" (retained, la
 
 ### Outdoor Sensor Node Wiring
 
+```text
+ Outdoor Node (Battery Powered)
+ ┌──────────────┐
+ │ ESP32 DevKit │
+ │         GP4  ├──┬──[R1 4.7K]── 3.3V
+ │              │  └── DHT22 Data
+ │              │
+ │        GP34  ├───── Soil Moisture AOUT
+ │              │
+ │        GP35  ├───┐
+ │              │   ├── Voltage Divider
+ │          GND ├──[100K]──┤──[100K]── Batt+
+ │              │          │
+ │         3.3V ├── Batt+ (2xAA, 3.0V)
+ │          GND ├── Batt-
+ └──────────────┘
+```
+
 Connect the DHT22 sensor and soil moisture sensor to the ESP32 on a breadboard. The battery voltage is read through a resistor voltage divider so that the full battery range (0 to 4.2V for lithium, 0 to 3.3V for alkaline) maps into the ESP32's ADC input range (0 to 3.3V). If you are using 2x AA alkaline batteries (3.0V nominal), the divider is optional since the voltage is already within range, but including it protects the ADC from any overshoot.
 
 | ESP32 Pin | Component | Notes |
@@ -134,6 +152,22 @@ Connect the DHT22 sensor and soil moisture sensor to the ESP32 on a breadboard. 
 The voltage divider uses two 100k ohm resistors. The midpoint connects to GPIO 35. With this divider, a 3.0V battery reads as 1.5V at the ADC, and you multiply by 2 in software to get the true voltage.
 
 ### Indoor Display Node Wiring
+
+```text
+ Indoor Node (USB Powered)
+ ┌──────────────┐    ┌──────────────┐
+ │ ESP32 DevKit │    │ SSD1306 OLED │
+ │              │    │ 128x64 I2C   │
+ │  GP21 (SDA) ─┼────┤ SDA          │
+ │  GP22 (SCL) ─┼────┤ SCL          │
+ │  3.3V ───────┼────┤ VCC          │
+ │  GND ────────┼────┤ GND          │
+ │              │    └──────────────┘
+ │  MQTT sub ───┼── Live sensor data
+ │  HTTP :80 ───┼── Web dashboard
+ │     USB      │
+ └──────┤├──────┘
+```
 
 | ESP32 Pin | Component | Notes |
 |-----------|-----------|-------|

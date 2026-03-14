@@ -66,6 +66,23 @@ Most microcontrollers wire each peripheral to a fixed set of pins. The ESP32 tak
 
 ### How Signal Routing Works
 
+```text
+ ESP32 GPIO Matrix Signal Routing
+ ┌──────────┐    ┌──────────────┐    ┌──────────┐
+ │Peripheral│    │  GPIO Matrix │    │ Physical │
+ │ Signals  │    │              │    │  Pads    │
+ │          │    │ ┌──────────┐ │    │          │
+ │ LEDC Ch0 ├───>│ │  Output  │ ├───>│ GPIO 18  │
+ │ SPI MOSI ├───>│ │  Matrix  │ ├───>│ GPIO 23  │
+ │ UART TX  ├───>│ └──────────┘ │    │          │
+ │          │    │ ┌──────────┐ │    │          │
+ │ UART RX  │<───┤ │  Input   │ │<───┤ GPIO 16  │
+ │ PCNT Sig │<───┤ │  Matrix  │ │<───┤ GPIO 25  │
+ │          │    │ └──────────┘ │    │          │
+ └──────────┘    └──────────────┘    └──────────┘
+  ~25 ns delay per routing stage
+```
+
 The GPIO matrix maintains two routing tables. The output matrix maps peripheral signals to GPIO pads, and the input matrix maps GPIO pads to peripheral inputs. When you configure LEDC channel 0 to output on GPIO18, the GPIO matrix programs one entry in the output table: "peripheral signal X goes to pad 18." When you configure UART RX on GPIO16, the input table gets an entry: "pad 16 feeds into UART RX."
 
 Some signals bypass the matrix entirely for better timing. These are called "direct I/O" or "dedicated GPIO" connections. The SPI flash interface, JTAG pins, and the high-speed SD card interface use direct connections because the matrix adds about 25 ns of propagation delay per stage. For LEDC PWM, touch sensing, and general-purpose I/O, the matrix delay is negligible.
@@ -209,6 +226,25 @@ For this project we use Touch0 on GPIO4, which has no strapping conflicts.
 
 ### How Capacitive Sensing Works
 
+```text
+ Capacitive Touch Sensing
+ ┌──────────────────────────────────┐
+ │  No Touch         With Touch    │
+ │                                  │
+ │  GPIO4 ─┐         GPIO4 ─┐     │
+ │         ─┤─ Wire          ─┤─   │
+ │          │                 │    │
+ │    Low C │           High C│    │
+ │          │            ┌────┤    │
+ │          │            │Finger   │
+ │          │            └────┘    │
+ │                                  │
+ │  Fast cycling      Slow cycling │
+ │  High count        Low count    │
+ │  = not touched     = touched    │
+ └──────────────────────────────────┘
+```
+
 The touch controller charges each touch pad to a reference voltage, then counts how many charge/discharge cycles occur within a fixed measurement window. When nothing is touching the pad, the count is high (low capacitance, fast cycling). When your finger approaches, the added capacitance slows down the cycling and the count drops. The raw reading from `touch_pad_read()` reflects this count: lower values mean a touch is detected.
 
 ### ESP-IDF Touch API
@@ -349,6 +385,19 @@ The lamp dimmer will save the current brightness to NVS whenever it changes. On 
 
 <InArticleAd />
 
+
+```text
+   ESP32 DevKitC        Touch Lamp Circuit
+  ┌─────────────┐
+  │        GP18 ├──[R1 100R]──┤>├── GND
+  │             │              LED
+  │         GP4 ├──── Bare wire / copper pad
+  │             │     (touch sensor)
+  │         GND ├──── GND rail
+  │             │
+  │     USB     │
+  └──────┤├─────┘
+```
 
 Connect the components on a breadboard as follows:
 

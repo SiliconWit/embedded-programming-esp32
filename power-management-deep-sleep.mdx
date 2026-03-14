@@ -105,6 +105,25 @@ The ESP32 offers five distinct power modes, each trading functionality for lower
 
 **Hibernation** disables everything except the RTC timer. This achieves the lowest current draw (around 5 uA) but can only wake from a timer. There is no GPIO wake, no ULP, and no RTC memory preservation. Use this mode when you only need periodic time-based wakes with no sensor monitoring during sleep.
 
+```text
+ Deep Sleep Wake Sources
+                  ┌─────────────────┐
+ Timer ──────────>│                 │
+ (RTC, us prec.) │                 │
+                  │   RTC          │
+ ext0 GPIO ─────>│   Controller   ├──> Wake + Reset
+ (single pin)    │                 │   (app_main()
+                  │   Runs at      │    restarts)
+ ext1 GPIO ─────>│   ~10 uA       │
+ (pin mask)      │                 │
+                  │   8 KB RTC     │
+ Touch Pad ─────>│   slow memory  │
+ (any channel)   │   preserved    │
+                  │                 │
+ ULP Program ───>│                 │
+ (threshold)     └─────────────────┘
+```
+
 ## Deep Sleep Configuration
 
 <InArticleAd />
@@ -531,6 +550,24 @@ Estimating battery life requires calculating the average current draw over a com
 
 ```
 average_current = (active_time * active_current + sleep_time * sleep_current) / total_cycle_time
+```
+
+```text
+ Wake/Sleep Duty Cycle (5-min interval)
+ Current
+ (mA)
+ 150 │        ┌──────┐  Wi-Fi + MQTT
+     │        │      │
+ 100 │   ┌────┘      │
+     │   │ Init      │
+  40 │───┘   Sensor  └──┐ Shutdown
+     │                   │
+  20 │                   │
+     │                   └──────────────────
+ 0.01│   . . . . . . . . . . Deep Sleep . .
+     └────────────────────────────────────>
+     0s  0.5  1.0     5.0  5.5        300s
+                    Time
 ```
 
 ### Example: Weather Node with 5-Minute Interval

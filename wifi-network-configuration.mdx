@@ -62,6 +62,26 @@ A portable Wi-Fi survey tool. The ESP32 starts in STA+AP mode: it connects to yo
 
 The ESP32 Wi-Fi stack runs on a dedicated task created internally by `esp_wifi_start()`. Your application code never calls Wi-Fi functions from an ISR or directly manipulates the radio hardware. Instead, you interact with the driver through an event loop: you register handler functions, call API functions like `esp_wifi_connect()`, and the driver posts events (connected, disconnected, got IP) back to your handlers asynchronously.
 
+```text
+ ESP32 Wi-Fi Stack Layers
+ ┌──────────────────────────────────┐
+ │       Application Code          │
+ │   (event handlers, API calls)   │
+ ├──────────────────────────────────┤
+ │       ESP-IDF Event Loop        │
+ │  (WIFI_EVENT, IP_EVENT posts)   │
+ ├──────────────────────────────────┤
+ │      lwIP (TCP/IP Stack)        │
+ │  (sockets, DHCP, DNS, mDNS)    │
+ ├──────────────────────────────────┤
+ │     Wi-Fi Driver (closed-src)   │
+ │  (802.11 MAC, scan, auth)       │
+ ├──────────────────────────────────┤
+ │      Wi-Fi Hardware (PHY)       │
+ │  (2.4 GHz radio, antenna)       │
+ └──────────────────────────────────┘
+```
+
 ### The Event Loop Model
 
 ESP-IDF uses a default event loop for system events. The sequence for any Wi-Fi operation looks like this:
@@ -281,6 +301,18 @@ The `max_connection` field limits simultaneous clients. The ESP32 supports up to
 
 The ESP32 can run station and access point interfaces simultaneously. This is the mode we use for the signal mapper: the STA interface connects to your existing network (giving the ESP32 internet access if needed), while the AP interface lets you connect a phone or laptop directly to view results.
 
+```text
+ STA+AP Mode (Simultaneous)
+ ┌──────────┐       ┌──────────────┐
+ │  Home    │  STA  │              │  AP
+ │  Router  │<─────>│    ESP32     │<─────>┌────────┐
+ │          │ .100  │              │ .1    │ Phone/ │
+ └──────────┘       │ 192.168.4.1 │       │ Laptop │
+ 192.168.1.x        │              │       └────────┘
+  (existing)        └──────────────┘     192.168.4.x
+                     SSID: ESP32-Mapper   (ESP32 AP)
+```
+
 ```c
 /* Create both network interfaces */
 esp_netif_create_default_wifi_sta();
@@ -413,6 +445,29 @@ Hardcoding the SSID and password works during development, but a real product ne
 ### How SmartConfig Works
 
 The phone must already be connected to the target Wi-Fi network. The SmartConfig app encodes the SSID, password, and other parameters into the lengths of specially crafted UDP broadcast or multicast packets. The ESP32, in promiscuous mode, captures these packets, decodes the credential information from the packet lengths, and then connects to the network.
+
+```text
+ SmartConfig Provisioning Flow
+ ┌──────────┐    ┌──────────────┐    ┌──────────┐
+ │  Phone   │    │   Wi-Fi AP   │    │  ESP32   │
+ │ (app)    │    │   (Router)   │    │ (listen) │
+ └────┬─────┘    └──────┬───────┘    └────┬─────┘
+      │  1. User enters       │           │
+      │     SSID+password     │           │
+      │                       │           │
+      │  2. Encode creds in   │           │
+      │     UDP packet lens   │           │
+      ├──────────────────────>│           │
+      │                       │  3. ESP32 │
+      │                       │  captures │
+      │                       ├──────────>│
+      │                       │           │
+      │                       │  4. Decode│
+      │                       │  & connect│
+      │                       │<──────────┤
+      │  5. Done notification │           │
+      │<──────────────────────────────────┤
+```
 
 This approach works without any pre-existing connection between the phone and the ESP32. The ESP32 only needs to be in a listening state.
 

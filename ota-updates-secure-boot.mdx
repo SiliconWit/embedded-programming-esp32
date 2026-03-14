@@ -64,6 +64,27 @@ A sensor node that checks for firmware updates from an HTTP server on your local
 
 The ESP32 can hold multiple firmware images in flash at once. The bootloader uses a data structure called `otadata` to decide which image to boot. The key idea is simple: while one firmware image is running, the other partition sits idle and can be overwritten with a new version. If the new version fails, the bootloader switches back.
 
+```text
+ OTA Dual Partition Layout (4 MB Flash)
+ ┌─────────────────────┐ 0x000000
+ │  Bootloader         │
+ ├─────────────────────┤ 0x009000
+ │  NVS (16 KB)        │
+ ├─────────────────────┤ 0x00D000
+ │  otadata (8 KB)     │ <-- boot selector
+ ├─────────────────────┤ 0x00F000
+ │  phy_init (4 KB)    │
+ ├─────────────────────┤ 0x010000
+ │  factory (1792 KB)  │ <-- initial USB flash
+ ├─────────────────────┤ 0x1D0000
+ │  ota_0 (1792 KB)    │ <-- OTA slot A
+ ├─────────────────────┤ 0x390000
+ │  ota_1 (1792 KB)    │ <-- OTA slot B
+ └─────────────────────┘ 0x400000
+  Bootloader alternates between ota_0/ota_1.
+  Failed update rolls back automatically.
+```
+
 ### Default vs. Custom Partition Table
 
 ESP-IDF ships with several built-in partition tables, but for OTA you need at least two app partitions. The most common OTA layout uses a factory partition (the initial firmware flashed via USB), two OTA slots, and an otadata partition that tracks which slot is active.
@@ -247,6 +268,26 @@ Rollback is what makes OTA safe. Without it, a buggy firmware update turns your 
 In `menuconfig`, navigate to **Bootloader config** and enable **Enable app rollback support**. You can also set a watchdog timeout under **Bootloader config > App rollback watchdog timeout** (default is 30 seconds).
 
 When rollback is enabled, the boot flow changes:
+
+```text
+ OTA Rollback Flow
+ ┌─────────────┐    ┌────────────────┐
+ │  OTA Write  │    │  Reboot into   │
+ │  new image  ├───>│  new firmware  │
+ │  to ota_1   │    │  (PENDING)     │
+ └─────────────┘    └───────┬────────┘
+                            │
+                  ┌─────────┴─────────┐
+                  │  Self-test pass?  │
+                  └────┬─────────┬────┘
+                  YES  │         │ NO / timeout
+                       v         v
+              ┌────────────┐ ┌────────────┐
+              │ Mark VALID │ │  Watchdog  │
+              │ Keep new   │ │  reboot    │
+              │ firmware   │ │  Boot old  │
+              └────────────┘ └────────────┘
+```
 
 1. After an OTA update, the new firmware boots with status `ESP_OTA_IMG_PENDING_VERIFY`.
 2. The firmware must call `esp_ota_mark_app_valid_cancel_rollback()` before the watchdog timeout expires.

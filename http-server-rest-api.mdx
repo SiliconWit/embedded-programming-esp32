@@ -63,6 +63,25 @@ A complete thermostat system with a web interface. The ESP32 reads temperature a
 <InArticleAd />
 
 
+```text
+ Thermostat Circuit
+ ┌──────────────┐
+ │   ESP32      │
+ │         GP4  ├──┬──[R1 4.7K]── 3.3V
+ │              │  │
+ │              │  └── DHT22 Data
+ │              │      DHT22 VCC ── 3.3V
+ │              │      DHT22 GND ── GND
+ │              │
+ │         GP5  ├───── Relay IN (active low)
+ │              │      Relay VCC ── 5V (VBUS)
+ │              │      Relay GND ── GND
+ │              │      Relay COM/NO ── Load
+ │              │
+ │     USB      │      thermostat.local
+ └──────┤├──────┘      (mDNS, port 80)
+```
+
 Connect the components on a breadboard as follows:
 
 | ESP32 Pin | Component | Notes |
@@ -165,6 +184,21 @@ The `httpd_req_recv()` function returns the number of bytes read, 0 if the conne
 
 <InArticleAd />
 
+
+```text
+ Browser-to-ESP32 Request Flow
+ ┌──────────┐  HTTP GET /api/status  ┌──────────┐
+ │ Browser  ├───────────────────────>│  ESP32   │
+ │          │                        │ HTTP Srv │
+ │          │  200 OK + JSON body    │          │
+ │          │<───────────────────────┤  DHT22   │
+ │          │  {"temp":22.5,         │  Relay   │
+ │          │   "humidity":45.2,     │  SPIFFS  │
+ │          │   "setpoint":23.0}     │          │
+ └──────────┘                        └──────────┘
+  Phone/Laptop                       192.168.x.x
+  thermostat.local                   (mDNS)
+```
 
 The thermostat exposes three endpoints. All communication uses JSON:
 

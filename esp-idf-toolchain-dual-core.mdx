@@ -218,6 +218,25 @@ When you change a setting, menuconfig writes the result into `sdkconfig`. This f
 
 The ESP32's flash is divided into partitions. The partition table itself lives at offset 0x8000 and tells the bootloader where to find the application firmware, NVS storage, and any other data regions.
 
+```text
+ ESP32 Flash Memory Layout (4 MB)
+ ┌──────────────────────────────┐ 0x000000
+ │  Bootloader (2nd stage)      │
+ ├──────────────────────────────┤ 0x008000
+ │  Partition Table             │
+ ├──────────────────────────────┤ 0x009000
+ │  NVS (Non-Volatile Storage)  │ 24 KB
+ ├──────────────────────────────┤ 0x00F000
+ │  PHY Init Data               │ 4 KB
+ ├──────────────────────────────┤ 0x010000
+ │                              │
+ │  Factory App                 │ 1 MB
+ │                              │
+ ├──────────────────────────────┤
+ │  (Free / custom partitions)  │
+ └──────────────────────────────┘ 0x400000
+```
+
 The default "Single factory app, no OTA" partition table looks like this:
 
 | Name | Type | SubType | Offset | Size |
@@ -250,6 +269,27 @@ This prints the parsed table with offsets and sizes, which is useful for verifyi
 
 
 The ESP32 contains two Xtensa LX6 cores running at up to 240 MHz. Espressif names them PRO_CPU (core 0) and APP_CPU (core 1). ESP-IDF runs a symmetric multiprocessing (SMP) variant of FreeRTOS across both cores, meaning any task can run on either core unless you explicitly pin it.
+
+```text
+ ESP32 Dual-Core Architecture
+ ┌─────────────────────────────────────────┐
+ │              Shared Bus                 │
+ │  ┌───────────┐       ┌───────────┐     │
+ │  │ PRO_CPU   │       │ APP_CPU   │     │
+ │  │ (Core 0)  │       │ (Core 1)  │     │
+ │  │ Xtensa LX6│       │ Xtensa LX6│     │
+ │  │ 240 MHz   │       │ 240 MHz   │     │
+ │  └─────┬─────┘       └─────┬─────┘     │
+ │        │    ┌─────────┐    │           │
+ │        └────┤ FreeRTOS├────┘           │
+ │             │   SMP   │                │
+ │             └────┬────┘                │
+ │  ┌───────┐ ┌────┴────┐ ┌───────────┐  │
+ │  │ SRAM  │ │ ROM     │ │ Peripherals│  │
+ │  │ 520KB │ │ 448KB   │ │ GPIO,SPI..│  │
+ │  └───────┘ └─────────┘ └───────────┘  │
+ └─────────────────────────────────────────┘
+```
 
 ### How Boot and System Tasks Are Distributed
 
@@ -753,6 +793,18 @@ These two files are all the build system needs. ESP-IDF's CMake integration hand
 </Steps>
 
 ### Wiring the RGB LED
+
+```text
+        ESP32 DevKitC
+       ┌─────────────┐
+       │         GP25 ├──[R1 220R]──┐
+       │         GP26 ├──[R2 220R]──┤── RGB LED
+       │         GP27 ├──[R3 220R]──┤   (Common
+       │          GND ├─────────────┘   Cathode)
+       │              │
+       │     USB      │
+       └──────┤├──────┘
+```
 
 Connect the common-cathode RGB LED to the ESP32 DevKitC:
 
