@@ -12,6 +12,8 @@ sidebar:
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Contributors Welcome](https://img.shields.io/badge/contributors-welcome-orange)
 
+**Read this course at:** [https://siliconwit.com/education/embedded-programming-esp32/](https://siliconwit.com/education/embedded-programming-esp32/)
+
 A course on ESP32 development using the ESP-IDF framework. Lessons cover Wi-Fi, HTTP, MQTT, BLE, OTA updates, and power management, building toward a connected sensor network project.
 
 ## Lessons
