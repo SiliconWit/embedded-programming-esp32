@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-The ESP32 has two Xtensa LX6 cores, and in this first lesson you will put both of them to work. You will install ESP-IDF, learn how menuconfig and partition tables shape your firmware, and build an RGB mood lamp that runs smooth color animations on one core while the other core listens for serial commands to change patterns in real time. #ESP32 #ESPIDF #DualCore
+On a single-core MCU, a smooth animation stutters every time you stop to check for user input, and blocking on serial input freezes the display. The ESP32 sidesteps this entirely with two Xtensa LX6 cores running FreeRTOS SMP, so one core can animate while the other listens for commands without either task stalling the other. In this first lesson you will install ESP-IDF, learn how menuconfig and partition tables shape your firmware, and build an RGB mood lamp that splits color animations and serial command handling across both cores. #ESP32 #ESPIDF #DualCore
 
 ## What We Are Building
 

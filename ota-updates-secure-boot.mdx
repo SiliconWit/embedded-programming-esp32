@@ -131,6 +131,24 @@ The bootloader picks the OTA slot with the highest valid sequence number. If tha
 5. If no valid OTA partition is found, the bootloader loads the factory image.
 </Steps>
 
+```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+flowchart TD
+    A(["Bootloader starts"]) --> B["Read otadata\nfrom flash"]
+    B --> C{"ota_0 or ota_1\nhigher sequence?"}
+    C --> D["Select partition\nwith higher seq"]
+    D --> E{"State field?"}
+    E -->|VALID| F(["Boot selected\npartition"])
+    E -->|PENDING_VERIFY| G{"App calls\nmark_valid\nbefore WDT?"}
+    G -->|Yes| F
+    G -->|No / WDT fires| H["Mark INVALID\non next reboot"]
+    E -->|INVALID / ABORTED| I["Try other\nOTA slot"]
+    H --> I
+    I --> J{"Other slot\nvalid?"}
+    J -->|Yes| F
+    J -->|No| K(["Boot factory\npartition"])
+```
+
 ## ESP-IDF OTA API
 
 <InArticleAd />

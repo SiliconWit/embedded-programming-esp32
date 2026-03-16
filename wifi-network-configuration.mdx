@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-The ESP32's Wi-Fi stack is a complete 802.11 b/g/n implementation running on dedicated hardware, and ESP-IDF gives you full control over it through an event-driven API. In this lesson you will connect as a station, run as an access point, provision credentials without hardcoding them, and scan the radio spectrum. The project is a portable Wi-Fi signal mapper: walk around with your ESP32 and it builds a table of every access point it can see, complete with signal strength, channel, and encryption type, all served as a self-hosted webpage. #ESP32 #WiFi #Networking
+Hardcoding Wi-Fi credentials into firmware means reflashing every time the network changes, and a naive blocking connect loop leaves your device unresponsive if the access point is down. Production Wi-Fi code needs an event-driven architecture that handles disconnections, retries, and credential provisioning without freezing the main application. In this lesson you will master the ESP-IDF Wi-Fi driver: connect as a station, run as an access point, provision credentials over SmartConfig (no hardcoding), and scan the radio spectrum. The project is a portable Wi-Fi signal mapper that builds a table of every nearby access point and serves the results as a self-hosted webpage. #ESP32 #WiFi #Networking
 
 ## What We Are Building
 
@@ -91,6 +91,23 @@ ESP-IDF uses a default event loop for system events. The sequence for any Wi-Fi 
 3. Initialize the Wi-Fi driver with `esp_wifi_init()`.
 4. Configure the mode (STA, AP, or both) and call `esp_wifi_start()`.
 5. The driver posts events to the loop; your handlers run in the event task context.
+
+```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Started : esp_wifi_start()
+    Started --> Scanning : STA_START event
+    Scanning --> Authenticating : AP found
+    Authenticating --> Connected : STA_CONNECTED
+    Authenticating --> Disconnected : Auth failed
+    Connected --> GotIP : IP_EVENT_STA_GOT_IP
+    Connected --> Disconnected : STA_DISCONNECTED
+    GotIP --> Connected : IP lost
+    GotIP --> Disconnected : STA_DISCONNECTED
+    Disconnected --> Scanning : Auto-reconnect\n(retry with backoff)
+    Disconnected --> Idle : esp_wifi_stop()
+```
 
 Here is the minimal initialization sequence:
 
