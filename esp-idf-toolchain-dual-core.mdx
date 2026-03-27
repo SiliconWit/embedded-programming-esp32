@@ -23,11 +23,44 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 
 
+import ModeSelector from '../../../../components/learning/ModeSelector.astro';
+import Mode from '../../../../components/learning/Mode.astro';
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
 On a single-core MCU, a smooth animation stutters every time you stop to check for user input, and blocking on serial input freezes the display. The ESP32 sidesteps this entirely with two Xtensa LX6 cores running FreeRTOS SMP, so one core can animate while the other listens for commands without either task stalling the other. In this first lesson you will install ESP-IDF, learn how menuconfig and partition tables shape your firmware, and build an RGB mood lamp that splits color animations and serial command handling across both cores. #ESP32 #ESPIDF #DualCore
 
+<ModeSelector />
+
+<Mode only="basics">
+
+## What You Will Learn
+
+The ESP32 is a small, inexpensive computer chip with two processor cores, Wi-Fi, and Bluetooth built in. Unlike simpler microcontrollers that can only do one thing at a time, the ESP32 can run two tasks simultaneously, one on each core.
+
+In this lesson you will set up the programming tools (called ESP-IDF) and build an RGB mood lamp. One core runs a smooth color animation on an LED while the other core listens for your typed commands ("red", "rainbow", "pulse"). Neither core has to wait for the other, so the animation never stutters and your commands are always heard instantly.
+
+```text
+ How the mood lamp works:
+
+ ┌──────────────┐         ┌──────────────┐
+ │   Core 0     │         │   Core 1     │
+ │              │  queue   │              │
+ │ Listens for  ├────────>│ Runs color   │
+ │ your typed   │ "rainbow"│ animation    │
+ │ commands     │         │ on RGB LED   │
+ └──────────────┘         └──────────────┘
+```
+
+The wiring diagram and parts list are below. Switch to **Explained** to see the full implementation with code, or **Deep Dive** for the engineering details behind the design choices.
+
+</Mode>
+
+<Mode min="explained">
+
 ## What We Are Building
+
+<InArticleAd />
+
 
 <Card title="RGB Mood Lamp" icon="star">
 A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS system tasks and serial command parsing, while Core 1 runs continuous HSV color animations on an RGB LED using LEDC PWM. Send commands like "red", "rainbow", or "pulse" over the serial monitor to switch modes instantly.
@@ -46,6 +79,8 @@ A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS sy
 | Current-Limiting Resistors | 3x 220 ohm (one per color channel) |
 | Power | USB (5V from DevKitC) |
 
+</Mode>
+
 ### Bill of Materials
 
 | Ref | Component | Quantity | Notes |
@@ -55,6 +90,8 @@ A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS sy
 | R1, R2, R3 | 220 ohm resistor | 3 | One per color channel |
 | | Breadboard + jumper wires | 1 set | |
 | | USB cable (Micro-B or Type-C) | 1 | Depends on DevKitC version |
+
+<Mode min="explained">
 
 ## Installing ESP-IDF
 
@@ -211,6 +248,10 @@ This opens a terminal-based menu. Key settings to know:
 
 When you change a setting, menuconfig writes the result into `sdkconfig`. This file is auto-generated and should generally not be edited by hand. If you want to set defaults for version control, put your overrides into `sdkconfig.defaults` instead. The build system reads `sdkconfig.defaults` first, then applies any existing `sdkconfig` on top.
 
+<Mode min="deep-dive">
+The distinction between `sdkconfig` and `sdkconfig.defaults` matters for teams. `sdkconfig` is machine-specific and should go in `.gitignore`. `sdkconfig.defaults` goes into version control and holds only your intentional overrides. When a teammate clones the repo, ESP-IDF generates a fresh `sdkconfig` from the defaults. The [HTTP Server lesson](/education/embedded-programming-esp32/http-server-rest-api/) shows how to define custom Kconfig menu entries for your own application settings, not just system configuration.
+</Mode>
+
 ## Partition Table
 
 <InArticleAd />
@@ -245,6 +286,7 @@ The default "Single factory app, no OTA" partition table looks like this:
 | phy_init | data | phy | 0xf000 | 4 KB |
 | factory | app | factory | 0x10000 | 1 MB |
 
+<Mode min="deep-dive">
 For projects that need OTA updates or filesystem storage, you create a custom `partitions.csv`:
 
 ```csv
@@ -261,7 +303,8 @@ Then select "Custom partition table CSV" in menuconfig and point it to your file
 idf.py partition-table
 ```
 
-This prints the parsed table with offsets and sizes, which is useful for verifying that partitions do not overlap.
+This prints the parsed table with offsets and sizes, which is useful for verifying that partitions do not overlap. You will use custom partition tables in [Lesson 8: OTA Updates](/education/embedded-programming-esp32/ota-updates-secure-boot/), where the flash needs two application slots for safe firmware updates.
+</Mode>
 
 ## Dual-Core Architecture
 
@@ -340,6 +383,14 @@ Pass `tskNO_AFFINITY` as the last argument to let the scheduler decide which cor
 
 Pin a task when it has strict timing requirements (motor control, audio sampling), when it accesses hardware that is not thread-safe, or when you want to isolate it from Wi-Fi and Bluetooth stack activity on core 0. Leave tasks unpinned when they are not latency-sensitive and can benefit from load balancing.
 
+<Mode min="deep-dive">
+Espressif chose symmetric multiprocessing (SMP) over asymmetric multiprocessing (AMP). In AMP, each core runs its own OS with separate memory. In SMP, both cores share one FreeRTOS instance and one address space, which simplifies inter-task communication (a shared queue or semaphore is enough) but requires locking when accessing shared data. One practical consequence: ISRs can run on either core by default. If your ISR writes to data that a pinned task reads, you need a spinlock (`portMUX_TYPE`), not just a mutex. The [RTOS Programming course](/education/rtos-programming/) covers synchronization primitives in depth.
+</Mode>
+
+<Mode only="in-practice">
+In production IoT devices, core 0 typically runs the networking stack (Wi-Fi, BLE, MQTT) while core 1 runs the application control loop. This pattern appears throughout this course: [Lesson 4: Wi-Fi](/education/embedded-programming-esp32/wifi-network-configuration/) and [Lesson 6: MQTT](/education/embedded-programming-esp32/mqtt-cloud-communication/) keep networking on core 0. The [IoT Systems course](/education/iot-systems/) applies the same split to multi-sensor systems where sampling must not be delayed by network retries. In the [Capstone project](/education/embedded-programming-esp32/connected-sensor-network-project/) at the end of this course, you will build a complete sensor network using this architecture.
+</Mode>
+
 ## LEDC PWM for RGB LED
 
 <InArticleAd />
@@ -407,6 +458,10 @@ void set_rgb(uint8_t r, uint8_t g, uint8_t b) {
 ```
 
 The `ledc_set_duty()` call writes to a shadow register. The value only takes effect when you call `ledc_update_duty()`, which transfers the shadow value to the active register at the next timer overflow. This prevents glitches when updating multiple channels.
+
+<Mode min="deep-dive">
+LEDC also supports hardware fading via `ledc_set_fade_with_time()`, which ramps the duty cycle smoothly without CPU involvement. We animate in software here because we need HSV conversion per frame, but for simple brightness transitions or single-color breathing effects, the hardware fader uses zero CPU cycles. The [GPIO and Peripherals lesson](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/) explores additional LEDC features alongside the Pulse Counter and RMT peripherals.
+</Mode>
 
 ## HSV to RGB Conversion
 
@@ -791,6 +846,8 @@ These two files are all the build system needs. ESP-IDF's CMake integration hand
 
 6. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
+
+</Mode>
 
 ### Wiring the RGB LED
 
