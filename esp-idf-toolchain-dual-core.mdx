@@ -31,7 +31,7 @@ On a single-core MCU, a smooth animation stutters every time you stop to check f
 
 <ModeSelector />
 
-<Mode only="basics">
+<Mode only="overview">
 
 ## What You Will Learn
 
@@ -51,7 +51,7 @@ In this lesson you will set up the programming tools (called ESP-IDF) and build 
  └──────────────┘         └──────────────┘
 ```
 
-The wiring diagram and parts list are below. Switch to **Explained** to see the full implementation with code, or **Deep Dive** for the engineering details behind the design choices.
+The wiring diagram and parts list are below. Switch to **Explained** to see the full implementation with code, or **Advanced** for the engineering details behind the design choices.
 
 </Mode>
 
@@ -248,7 +248,7 @@ This opens a terminal-based menu. Key settings to know:
 
 When you change a setting, menuconfig writes the result into `sdkconfig`. This file is auto-generated and should generally not be edited by hand. If you want to set defaults for version control, put your overrides into `sdkconfig.defaults` instead. The build system reads `sdkconfig.defaults` first, then applies any existing `sdkconfig` on top.
 
-<Mode min="deep-dive">
+<Mode min="advanced">
 The distinction between `sdkconfig` and `sdkconfig.defaults` matters for teams. `sdkconfig` is machine-specific and should go in `.gitignore`. `sdkconfig.defaults` goes into version control and holds only your intentional overrides. When a teammate clones the repo, ESP-IDF generates a fresh `sdkconfig` from the defaults. The [HTTP Server lesson](/education/embedded-programming-esp32/http-server-rest-api/) shows how to define custom Kconfig menu entries for your own application settings, not just system configuration.
 </Mode>
 
@@ -286,7 +286,7 @@ The default "Single factory app, no OTA" partition table looks like this:
 | phy_init | data | phy | 0xf000 | 4 KB |
 | factory | app | factory | 0x10000 | 1 MB |
 
-<Mode min="deep-dive">
+<Mode min="advanced">
 For projects that need OTA updates or filesystem storage, you create a custom `partitions.csv`:
 
 ```csv
@@ -383,11 +383,9 @@ Pass `tskNO_AFFINITY` as the last argument to let the scheduler decide which cor
 
 Pin a task when it has strict timing requirements (motor control, audio sampling), when it accesses hardware that is not thread-safe, or when you want to isolate it from Wi-Fi and Bluetooth stack activity on core 0. Leave tasks unpinned when they are not latency-sensitive and can benefit from load balancing.
 
-<Mode min="deep-dive">
+<Mode min="advanced">
 Espressif chose symmetric multiprocessing (SMP) over asymmetric multiprocessing (AMP). In AMP, each core runs its own OS with separate memory. In SMP, both cores share one FreeRTOS instance and one address space, which simplifies inter-task communication (a shared queue or semaphore is enough) but requires locking when accessing shared data. One practical consequence: ISRs can run on either core by default. If your ISR writes to data that a pinned task reads, you need a spinlock (`portMUX_TYPE`), not just a mutex. The [RTOS Programming course](/education/rtos-programming/) covers synchronization primitives in depth.
-</Mode>
 
-<Mode only="in-practice">
 In production IoT devices, core 0 typically runs the networking stack (Wi-Fi, BLE, MQTT) while core 1 runs the application control loop. This pattern appears throughout this course: [Lesson 4: Wi-Fi](/education/embedded-programming-esp32/wifi-network-configuration/) and [Lesson 6: MQTT](/education/embedded-programming-esp32/mqtt-cloud-communication/) keep networking on core 0. The [IoT Systems course](/education/iot-systems/) applies the same split to multi-sensor systems where sampling must not be delayed by network retries. In the [Capstone project](/education/embedded-programming-esp32/connected-sensor-network-project/) at the end of this course, you will build a complete sensor network using this architecture.
 </Mode>
 
@@ -459,7 +457,7 @@ void set_rgb(uint8_t r, uint8_t g, uint8_t b) {
 
 The `ledc_set_duty()` call writes to a shadow register. The value only takes effect when you call `ledc_update_duty()`, which transfers the shadow value to the active register at the next timer overflow. This prevents glitches when updating multiple channels.
 
-<Mode min="deep-dive">
+<Mode min="advanced">
 LEDC also supports hardware fading via `ledc_set_fade_with_time()`, which ramps the duty cycle smoothly without CPU involvement. We animate in software here because we need HSV conversion per frame, but for simple brightness transitions or single-color breathing effects, the hardware fader uses zero CPU cycles. The [GPIO and Peripherals lesson](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/) explores additional LEDC features alongside the Pulse Counter and RMT peripherals.
 </Mode>
 
