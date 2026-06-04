@@ -1699,7 +1699,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 | Relay chatters rapidly | Increase `HYSTERESIS` from 0.5 to 1.0. If the sensor readings are noisy, add a software moving average filter. |
 
 :::tip[Instrument it]
-A device that serves its own REST API is a monitor that needs no cloud: point a browser at it on the LAN to read live values, or POST a command to flip a relay or change a setpoint. That is the right pattern for a machine on a closed factory network or a site with no internet, and the same endpoints bridge outward later when you do want remote access. Expose the readings and the controls as clean routes, and the device is ready to [join a wider system](/education/iot-systems/) when it needs to.
+A device that serves its own REST API is a monitor that needs no cloud: point a browser at it on the LAN to read live values, or POST a command to flip a relay or change a setpoint. That is the right pattern for a machine on a closed factory network or a site with no internet, and the same endpoints bridge outward later when you do want remote access. Expose the readings and the controls as clean routes, and the device is ready to [join a wider system](/education/iot-systems/) like [siliconwit.io](https://siliconwit.io) when it needs to.
 :::
 
 ## Exercises
