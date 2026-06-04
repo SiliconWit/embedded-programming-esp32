@@ -1330,6 +1330,10 @@ If you prefer testing from your phone, install one of these free apps:
 
 Connect to the same broker with the same credentials, subscribe to `home/garden/#` to see all messages from the sensor, and publish to `home/garden/config` to change settings remotely.
 
+:::tip[Instrument it]
+This is the lesson that takes a reading off a sensor and onto a dashboard, and the instrumentation craft here is restraint. Publish the signal that matters (a temperature, a vibration RMS, an event), not a firehose of raw samples, on a clear topic hierarchy like `site/machine/metric`, with retained last-values so a new client sees state immediately and a Last Will that flags a node that dropped off. Get that right and any reading becomes a live feed you can [chart, alert on, and automate](https://siliconwit.io).
+:::
+
 ## Exercises
 
 <InArticleAd />

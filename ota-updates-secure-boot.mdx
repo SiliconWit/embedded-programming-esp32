@@ -1130,6 +1130,10 @@ If you want to enable both flash encryption and secure boot for the full securit
 Every time you flash via UART with flash encryption in development mode, the flash encryption counter is incremented. You have a limited number of UART reflashes (typically 3). After that, you must use OTA exclusively. Plan your development workflow accordingly: get the base firmware working without encryption first, then enable security features when the code is stable.
 :::
 
+:::tip[Instrument it]
+A monitor you deploy is a monitor you will need to change: a new threshold, a bug fix, a better model. OTA is what lets you do that to a node bolted inside a machine or sitting in a field without ever touching it, and secure boot with signed images is what stops anyone else pushing firmware to it. A fleet you can update and trust remotely is the difference between a one-off demo and infrastructure you [run for years](https://siliconwit.io).
+:::
+
 ## Exercises
 
 <InArticleAd />

@@ -1944,6 +1944,10 @@ Before deploying this system in a real environment (garden, greenhouse, rooftop)
 | Antenna placement | Keep the ESP32 antenna away from metal surfaces and battery packs. Orient it vertically for best range |
 | Temperature range | The ESP32 operates from -40 to 85 degrees Celsius. Batteries are the limiting factor; lithium cells perform better in cold weather than alkaline |
 
+:::tip[Instrument it]
+A sensor network is only as good as where its nodes sit. Put each node where the variable actually lives, not where the WiFi is strongest: the temperature node in the air the equipment breathes, the humidity node away from a vent that dries it out, the motion node with a clear line of sight. Then make it survive the place, a sealed enclosure with the sensor vented to ambient, an antenna clear of metal, and a battery budget that matches the reporting rate. Once placed and housed, an ESP32 node can [stream from anywhere](https://siliconwit.io) over WiFi, cellular, or LoRaWAN.
+:::
+
 ## Exercises
 
 <InArticleAd />

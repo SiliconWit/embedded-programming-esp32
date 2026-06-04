@@ -1199,6 +1199,10 @@ The easiest way to test your BLE environmental beacon is with the nRF Connect ap
 | Notifications not received | CCCD not written | Tap the notification icon in nRF Connect (not just the read icon) |
 | "GATT Error 0x0E" | MTU too small for data | Default MTU (23 bytes) is enough for 2-byte values; check data size |
 
+:::tip[Instrument it]
+BLE is the right link for a sensor that must run for months on a coin cell and only needs to reach a phone or a nearby gateway: a temperature beacon on a cold-store door, a vibration tag on a motor, a wearable. Notify the reading rather than letting the client poll, so the radio sleeps between updates, and a gateway can collect several tags and [forward them onward](/education/iot-systems/). It is monitoring without the power cost of Wi-Fi.
+:::
+
 ## Exercises
 
 <InArticleAd />
