@@ -4,7 +4,7 @@ description: "Master ESP32 deep sleep modes, ULP coprocessor programming, RTC me
 contributors: "sam-macharia,lawrence-langat"
 pubDate: 2026-03-07
 tags: ["esp32", "deep-sleep", "power-management", "ulp", "battery", "solar", "low-power"]
-excerpt: "Learn every power-saving trick the ESP32 offers: light sleep, deep sleep, hibernation, ULP coprocessor, RTC memory, and multiple wake sources. Build a battery-powered weather node that wakes every few minutes to read sensors and publish data over Wi-Fi, then sleeps at under 10 microamps."
+excerpt: "Learn every power-saving trick the ESP32 offers: light sleep, deep sleep, hibernation, ULP coprocessor, RTC memory, and multiple wake sources. Build a battery-powered weather node that wakes every few minutes to read sensors and publish data over Wi-Fi, then sleeps at about 10 microamps."
 heroImage: "https://cdn.siliconwit.com/education/embedded-programming-esp32/power-management-deep-sleep.png"
 ---
 
@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-An ESP32 running Wi-Fi draws around 150 mA, which drains two AA batteries in about a day. Deep sleep drops that to under 10 microamps, extending battery life to months or even a year with the right duty cycle. In this lesson you will learn to put the ESP32 into its lowest power states, wake it with timers, GPIO pins, or the ULP coprocessor, and preserve data across sleep cycles in RTC memory. The project is a weather node designed for long-term outdoor deployment on batteries, with power budgeting calculations to predict exactly how long your batteries will last. #ESP32 #DeepSleep #LowPower
+An ESP32 with Wi-Fi on draws around 150 mA, which empties two AA batteries in less than a day. A sensor in a field that needs new batteries every day will not stay in use for long. In deep sleep the chip itself draws about 10 microamps, so a node that sleeps most of the time and wakes for a few seconds can run for months. In this lesson you put the ESP32 to sleep, wake it by a timer or a pin, and keep data across the sleep. You build a weather node for batteries, and you calculate how long the batteries last before you install it. #ESP32 #DeepSleep #LowPower
 
 ## What We Are Building
 
 <Card title="Solar-Ready Weather Node" icon="star">
-A battery-powered weather station that wakes every 5 minutes, reads temperature and humidity, connects to Wi-Fi, publishes the data via MQTT, and returns to deep sleep. The ULP coprocessor monitors a rain sensor GPIO while the main cores are off, waking the system immediately on detection. RTC memory stores a message counter and last-known readings across sleep cycles. A full power budget shows expected battery life under different configurations.
+A weather station on batteries that wakes every 5 minutes, reads temperature and humidity, connects to Wi-Fi, publishes the data by MQTT and returns to deep sleep. A rain sensor pin wakes it at once, between the timed wakes. The lesson also shows how the ULP coprocessor, a very small second processor that stays on during sleep, can watch such a pin. RTC memory, a small memory that stays powered during sleep, keeps a message counter and the last readings. A power budget gives the expected battery life.
 </Card>
 
 **Project specifications:**
@@ -39,21 +39,21 @@ A battery-powered weather station that wakes every 5 minutes, reads temperature 
 |-----------|-------|
 | MCU | ESP32 DevKitC |
 | Power Source | 2x AA batteries (3V nominal) |
-| Deep Sleep Current | Less than 10 uA (with RTC peripherals disabled) |
+| Deep Sleep Current | About 10 uA for the chip alone. A whole development board draws far more (see Measuring Current Draw) |
 | Wake Sources | Timer (5 min default), GPIO (rain sensor), ULP threshold |
 | Active Duration | Approximately 5 to 8 seconds per cycle (sensor read + Wi-Fi + MQTT publish) |
-| Sensor | DHT22 (reused) |
-| Communication | MQTT over Wi-Fi (reuse broker from Lesson 5) |
+| Sensor | DHT22 |
+| Communication | MQTT over Wi-Fi (the broker from the MQTT lesson) |
 | RTC Memory | Message counter, last temperature, last humidity |
 | ULP Program | Monitor GPIO for rain sensor trigger |
-| Estimated Battery Life | 4 to 8 months on 2x AA (depending on wake interval) |
+| Estimated Battery Life | About 4 months on 2x AA at a 5 minute interval with fast reconnect, for a bare module |
 
 ### Bill of Materials
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from previous lessons |
-| S1 | DHT22 temperature/humidity sensor | 1 | Reused from Lesson 4 |
+| U1 | ESP32 DevKitC | 1 | The board you have used so far |
+| S1 | DHT22 temperature/humidity sensor | 1 | From the HTTP server lesson |
 | B1 | 2x AA battery holder | 1 | With leads or JST connector |
 | | 2x AA batteries | 2 | Alkaline or lithium recommended |
 | | Breadboard + jumper wires | 1 set | |
@@ -72,9 +72,9 @@ Connect the DHT22 sensor and a push button (simulating a rain sensor trigger) to
 | 3.3V | DHT22 VCC, pull-up resistor | Power supply |
 | GND | DHT22 GND, button GND | Common ground |
 
-GPIO 25 is an RTC GPIO, which means it remains functional during deep sleep. Only RTC GPIOs can serve as wake sources. The push button simulates a rain sensor with a digital output: when pressed, it pulls GPIO 25 low, triggering an immediate wake from deep sleep.
+GPIO 25 is an RTC GPIO: a pin wired to the small part of the chip that stays powered in deep sleep. Only RTC GPIOs can wake the chip. The push button stands for a rain sensor with a digital output. When pressed, it pulls GPIO 25 low, and the chip wakes at once.
 
-For battery-powered operation, connect two AA batteries (3V total) to the ESP32's 3.3V pin and GND. The ESP32's onboard voltage regulator accepts input from about 2.3V to 3.6V on the 3.3V pin directly. For voltages above 3.6V, use the VIN pin instead, which feeds through the onboard regulator.
+To run from batteries, connect two AA batteries (3V together) to the 3.3V pin and GND. The 3.3V pin goes past the voltage regulator on the board and feeds the ESP32 directly. The chip accepts about 2.3V to 3.6V. For a supply above 3.6V, use the VIN pin, which goes through the regulator.
 
 :::caution
 When powering from batteries via the 3.3V pin, disconnect the USB cable. Running both power sources simultaneously can cause current to flow in unintended directions and damage the board or the batteries.
@@ -85,7 +85,7 @@ When powering from batteries via the 3.3V pin, disconnect the USB cable. Running
 <InArticleAd />
 
 
-The ESP32 offers five distinct power modes, each trading functionality for lower current draw. Understanding them is essential for designing battery-powered applications.
+A chip saves power by switching parts of itself off: the more it switches off, the less current it draws, the less it remembers and the fewer things can wake it. The ESP32 has five such steps, the power modes. One part appears in every row below: the RTC (real-time clock) domain, a small section of the chip with its own timer and a little memory, which stays on when the rest is off. All currents in the table are for the chip alone, not for a whole board.
 
 | Mode | Typical Current | What Runs | What Is Preserved | Wake Sources |
 |------|----------------|-----------|-------------------|--------------|
@@ -95,33 +95,26 @@ The ESP32 offers five distinct power modes, each trading functionality for lower
 | Deep Sleep | 10 uA | RTC controller, RTC memory, RTC peripherals | RTC slow memory (8 KB) | Timer, ext0/ext1 GPIO, touch, ULP |
 | Hibernation | 5 uA | RTC timer only | Nothing (except RTC timer) | Timer only |
 
-**Active mode** is the default operating state. Current draw varies widely depending on what peripherals are active. Wi-Fi transmission peaks at around 260 mA, while CPU-only computation with radios off draws about 30 to 50 mA.
+**Active mode** is normal running. Wi-Fi transmission peaks at around 260 mA. The CPU alone, with the radios off, draws about 30 to 50 mA.
 
-**Modem Sleep** is managed automatically by the Wi-Fi driver when connected to an access point. The radio powers down between DTIM beacon intervals and wakes to receive buffered data. Your code does not need to do anything special; the Wi-Fi stack handles it.
+**Modem Sleep** is done by the Wi-Fi driver itself while the chip is connected to an access point. The radio switches off between the beacons of the access point at which waiting data is announced (the DTIM beacons). Your code does nothing for it.
 
-**Light Sleep** pauses the CPU but preserves full RAM contents and register state. When the chip wakes, execution resumes from the exact instruction where it paused. This is useful when you need sub-second response times and want to keep variables in RAM without the overhead of saving state to RTC memory.
+**Light Sleep** pauses the CPU and keeps all of RAM. When the chip wakes, the program continues at the instruction where it stopped, like a film after the pause button.
 
-**Deep Sleep** is the primary mode for battery-powered IoT devices. The main CPUs, most of the RAM, and all digital peripherals are powered off completely. Only the RTC controller, RTC slow memory (8 KB), and optionally the ULP coprocessor remain powered. When the chip wakes from deep sleep, it performs a full reset: the bootloader runs, and `app_main()` starts from the beginning. Any data you want to preserve across sleep cycles must be stored in RTC memory using special attributes.
+**Deep Sleep** is the mode for a battery node. The main CPUs, most of the RAM and all digital peripherals lose power; only the RTC controller, the RTC slow memory (8 KB) and, if used, the ULP coprocessor stay on. Waking is a reset: the bootloader runs and `app_main()` starts from its first line, like switching a computer off and on, not like the pause button. Anything that must survive has to be in RTC memory.
 
-**Hibernation** disables everything except the RTC timer. This achieves the lowest current draw (around 5 uA) but can only wake from a timer. There is no GPIO wake, no ULP, and no RTC memory preservation. Use this mode when you only need periodic time-based wakes with no sensor monitoring during sleep.
+**Hibernation** leaves only the RTC timer on, for about 5 uA. Only the timer can wake the chip, and RTC memory is lost. Use it when the node needs nothing but a timed wake.
+
+The drawing shows what can wake the chip from deep sleep. Each source is explained below.
 
 ```text
- Deep Sleep Wake Sources
-                  ┌─────────────────┐
- Timer ──────────>│                 │
- (RTC, us prec.) │                 │
-                  │   RTC          │
- ext0 GPIO ─────>│   Controller   ├──> Wake + Reset
- (single pin)    │                 │   (app_main()
-                  │   Runs at      │    restarts)
- ext1 GPIO ─────>│   ~10 uA       │
- (pin mask)      │                 │
-                  │   8 KB RTC     │
- Touch Pad ─────>│   slow memory  │
- (any channel)   │   preserved    │
-                  │                 │
- ULP Program ───>│                 │
- (threshold)     └─────────────────┘
+                   ┌────────────────┐
+ Timer ───────────>│ RTC controller │
+ ext0, one pin ───>│ stays on at    │
+ ext1, pin mask ──>│ about 10 uA    ├──> Wake = reset:
+ Touch pad ───────>│ and keeps 8 KB │    app_main()
+ ULP program ─────>│ of RTC memory  │    starts again
+                   └────────────────┘
 ```
 
 ## Deep Sleep Configuration
@@ -129,7 +122,7 @@ The ESP32 offers five distinct power modes, each trading functionality for lower
 <InArticleAd />
 
 
-The core API for deep sleep is straightforward. You configure one or more wake sources, then call `esp_deep_sleep_start()`. The function never returns. When the chip wakes, it resets completely and runs `app_main()` from the beginning.
+Deep sleep needs two steps in code. You enable one or more wake sources, then you call `esp_deep_sleep_start()`. This function never returns, because the chip wakes by a reset and runs `app_main()` from the beginning.
 
 ```c
 #include "esp_sleep.h"
@@ -142,13 +135,11 @@ esp_sleep_enable_timer_wakeup(sleep_time_us);
 esp_deep_sleep_start();
 ```
 
-After waking, the ESP32 behaves as if it was just powered on. All variables in regular RAM are reset to their initial values. The Wi-Fi stack is uninitialized. FreeRTOS tasks do not exist yet. Your `app_main()` function must set everything up from scratch each time.
-
-This is fundamentally different from light sleep, where execution resumes mid-function. In deep sleep, you design your firmware as a one-shot program: initialize, do work, save state, sleep, repeat.
+After the wake the ESP32 behaves as if just switched on: every variable in ordinary RAM has its starting value again, Wi-Fi is not started and no FreeRTOS task exists, so `app_main()` must set everything up each time. Deep sleep firmware is a program that runs once from top to bottom: start, do the work, save what must survive, sleep.
 
 ### Boot Count Example
 
-A simple way to verify deep sleep is working is to track how many times the device has booted. The `RTC_DATA_ATTR` attribute places a variable in RTC slow memory, which survives deep sleep resets:
+To see that deep sleep works, count how many times the device has started. The attribute `RTC_DATA_ATTR` places a variable in RTC slow memory, which keeps its contents through a deep sleep reset:
 
 ```c
 #include <stdio.h>
@@ -176,38 +167,38 @@ void app_main(void)
 }
 ```
 
-Flash this program and open the serial monitor. You will see the boot count increment with every wake cycle: 1, 2, 3, and so on. Without `RTC_DATA_ATTR`, the counter would reset to 0 every time because regular RAM is lost during deep sleep.
+Flash it and open the serial monitor: the boot count rises with every wake, 1, 2, 3 and so on. Without `RTC_DATA_ATTR` it would start from 0 every time, because ordinary RAM is lost in deep sleep.
 
 ## Wake Sources
 
 <InArticleAd />
 
 
-The ESP32 supports multiple simultaneous wake sources. You can enable several at once, and the chip wakes when any one of them triggers. After waking, you query `esp_sleep_get_wakeup_cause()` to determine which source caused the wake.
+A sleeping node wakes for one of two reasons: it is time for a reading, or something happened. You can enable several wake sources together; the chip wakes when any one fires, and `esp_sleep_get_wakeup_cause()` then tells you which.
 
 ### Timer Wake
 
-Timer wake is the most common source for periodic sensor applications. You specify the sleep duration in microseconds:
+The timer is the usual source for a node that reports at a fixed interval. You give the sleep time in microseconds:
 
 ```c
 /* Wake after 5 minutes */
 esp_sleep_enable_timer_wakeup(5 * 60 * 1000000ULL);
 ```
 
-The RTC timer is reasonably accurate but not crystal-precise. Expect drift of a few percent over long periods. For applications requiring exact timing, synchronize with an NTP server during each active cycle and compensate the sleep duration accordingly.
+The RTC timer runs from a simple internal oscillator, not from a crystal, so it can be wrong by a few percent. If the node must report at exact times, read the time from a network time (NTP) server while it is awake and correct the next sleep time.
 
 ### ext0 Wake (Single GPIO)
 
-The ext0 wake source monitors a single RTC GPIO and wakes the chip when that pin reaches a specified level:
+The ext0 source watches one RTC GPIO and wakes the chip when that pin is at the level you name:
 
 ```c
 /* Wake when GPIO 25 goes LOW (button pressed, pulled to GND) */
 esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0);
 ```
 
-The second parameter is the trigger level: `0` for low, `1` for high. Only RTC GPIOs work as ext0 wake sources. On the ESP32, these are GPIOs 0, 2, 4, 12, 13, 14, 15, 25, 26, 27, 32, 33, 34, 35, 36, and 39.
+The second parameter is the trigger level: `0` for low, `1` for high. Only RTC GPIOs work as ext0 wake sources. On the ESP32, these are GPIOs 0, 2, 4, 12, 13, 14, 15, 25, 26, 27, and 32 to 39 (GPIO 37 and 38 are not brought out on the DevKitC).
 
-You must also configure the internal pull-up or pull-down resistor for the GPIO, since the main GPIO matrix is powered off during deep sleep:
+A pin with only a button on it has no defined level while the button is open, and would wake the chip at random; a pull-up resistor holds it high. The ordinary GPIO circuits are off in deep sleep, so switch on the pull-up of the RTC part:
 
 ```c
 /* Enable internal pull-up on GPIO 25 so it reads HIGH when the button is not pressed */
@@ -216,22 +207,22 @@ rtc_gpio_pullup_en(GPIO_NUM_25);
 rtc_gpio_pulldown_dis(GPIO_NUM_25);
 ```
 
-The call to `esp_sleep_pd_config()` with `ESP_PD_OPTION_ON` keeps the RTC peripherals powered during deep sleep, which is required for the internal pull resistors to function.
+The call to `esp_sleep_pd_config()` with `ESP_PD_OPTION_ON` keeps the RTC peripherals powered in deep sleep. The internal pull resistors need this. It adds a few microamps to the sleep current.
 
 ### ext1 Wake (Multiple GPIOs)
 
-The ext1 wake source monitors multiple RTC GPIOs simultaneously. You provide a bitmask of pins and a trigger mode:
+The ext1 source watches several RTC GPIOs together. You give a bitmask, a number in which each 1 bit selects one pin, and a trigger mode:
 
 ```c
-/* Wake when ANY of GPIO 25 or GPIO 26 goes LOW */
+/* Wake when ANY of GPIO 25 or GPIO 26 goes HIGH */
 uint64_t ext1_mask = (1ULL << GPIO_NUM_25) | (1ULL << GPIO_NUM_26);
-esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
 ```
 
-Two trigger modes are available:
+Two trigger modes are available on the original ESP32 (`ESP_EXT1_WAKEUP_ANY_LOW` exists only on newer chips such as the ESP32-S3):
 
 - `ESP_EXT1_WAKEUP_ALL_LOW`: Wake only when all specified pins are low simultaneously
-- `ESP_EXT1_WAKEUP_ANY_LOW`: Wake when any one of the specified pins goes low
+- `ESP_EXT1_WAKEUP_ANY_HIGH`: Wake when any one of the specified pins goes high
 
 After waking from ext1, you can determine which specific pin triggered the wake:
 
@@ -265,14 +256,14 @@ After waking, call `esp_sleep_get_touchpad_wakeup_status()` to determine which t
 
 ### ULP Wake
 
-The ULP (Ultra Low Power) coprocessor can wake the main processor from deep sleep. This is covered in detail in the ULP coprocessor section below.
+The ULP (Ultra Low Power) coprocessor can also wake the main processor. The ULP coprocessor section below shows how.
 
 ## Determining the Wake Cause
 
 <InArticleAd />
 
 
-When your firmware wakes from deep sleep, the first thing it should do (after incrementing the boot count) is check why it woke up. This determines what action to take: a timer wake might mean "read sensors and publish data," while a GPIO wake might mean "a rain event was detected."
+Every wake starts the same program from the top, so the firmware must first ask why it woke. The answer decides what to do: a timer wake means "read the sensors and publish", and a GPIO wake means "it has started to rain".
 
 ```c
 void handle_wakeup_reason(void)
@@ -313,18 +304,18 @@ void handle_wakeup_reason(void)
 }
 ```
 
-The `ESP_SLEEP_WAKEUP_UNDEFINED` case handles the first boot after flashing or a power cycle, where the chip was not waking from sleep at all. This distinction is important: on a cold boot, you might want to perform one-time calibration or send a "device online" message.
+The case `ESP_SLEEP_WAKEUP_UNDEFINED` is the first start after flashing or after the power was connected: the chip did not wake from sleep. On such a cold start you may want to calibrate once or send a "device online" message.
 
 ## RTC Memory
 
 <InArticleAd />
 
 
-RTC slow memory is 8 KB of SRAM powered by the RTC domain. It survives deep sleep resets but is cleared on power-on reset (removing batteries) or when you flash new firmware. Two attributes let you place variables here:
+Because every wake is a reset, ordinary variables forget everything. RTC slow memory is the exception, like a notebook by the bed: 8 KB of RAM that the RTC domain keeps powered through a deep sleep reset. It is wiped when the power is removed (new batteries) or new firmware is flashed. Two attributes place a variable there.
 
 ### RTC_DATA_ATTR
 
-Variables marked with `RTC_DATA_ATTR` are stored in RTC slow memory and initialized to zero on power-on reset, just like normal static variables. They retain their values across deep sleep cycles.
+A variable marked `RTC_DATA_ATTR` lives in RTC slow memory. It gets its starting value at power-on, like a normal static variable, and then keeps its value from one deep sleep to the next.
 
 ```c
 RTC_DATA_ATTR static int s_boot_count = 0;
@@ -336,7 +327,7 @@ RTC_DATA_ATTR static uint32_t s_total_messages_sent = 0;
 
 ### RTC_NOINIT_ATTR
 
-Variables marked with `RTC_NOINIT_ATTR` are also stored in RTC slow memory, but they are never initialized by the bootloader. They survive deep sleep resets, software resets, and even brownout resets. The only thing that clears them is a power-on reset or a flash erase. This is useful for crash counters or watchdog tracking:
+A variable marked `RTC_NOINIT_ATTR` is also in RTC slow memory, but nothing ever gives it a starting value, so it keeps its value through a deep sleep reset, a software reset and a brownout reset (caused by a supply voltage that fell too low). Only removing the power or erasing the flash clears it. Use it to count crashes:
 
 ```c
 RTC_NOINIT_ATTR static int s_crash_count;
@@ -355,7 +346,7 @@ void app_main(void)
 }
 ```
 
-Since `RTC_NOINIT_ATTR` variables are never initialized, they contain garbage on the very first power-on. You need a way to detect the first boot. A common pattern is to store a magic number alongside your data:
+Because nothing gives these variables a starting value, they hold random values at the first power-on. To detect that first start, store a known number (a "magic number") beside your data. If the number is not there, the memory is new:
 
 ```c
 #define RTC_MAGIC 0xDEADBEEF
@@ -376,36 +367,34 @@ void app_main(void)
 
 ### Practical Uses for RTC Memory
 
-RTC memory is limited to 8 KB, so use it judiciously. Common patterns include:
+RTC memory has only 8 KB, so keep small things in it:
 
-- **Boot/message counters** for telemetry and diagnostics
-- **Last sensor readings** so you can detect rapid changes without a full sensor read cycle
-- **Timestamps** of the last successful publish, to adjust sleep duration if a cycle was missed
-- **Wi-Fi channel and BSSID** to speed up reconnection (covered in the "Reducing Active Time" section)
-- **Error counters** to detect repeated failures and take corrective action (like extending sleep time to conserve battery)
-- **State machine position** so multi-step operations can resume after a wake
+- Boot and message counters
+- The last sensor readings, to see a fast change
+- The time of the last successful publish
+- The Wi-Fi channel and BSSID, for a faster connection (see "Reducing Active Time")
+- Error counters, so that repeated failures can lead to a longer sleep
+- The step reached in a task that takes several wakes
 
 ## ULP Coprocessor
 
 <InArticleAd />
 
 
-The ESP32 contains an Ultra Low Power (ULP) coprocessor: a simple, programmable processor that runs independently while the main Xtensa cores are in deep sleep. It draws only about 150 uA while active and has access to RTC GPIOs, the RTC I2C controller, the ADC, and RTC slow memory. The ULP can perform sensor measurements, monitor GPIO states, and wake the main processor only when specific conditions are met.
-
-This is powerful for threshold-based monitoring. Instead of waking the main cores (and the power-hungry Wi-Fi stack) every few seconds to check a GPIO, you let the ULP check it every 100 milliseconds for almost no power cost. The main cores only wake when something actually happens.
+Suppose the node must notice an event within a fraction of a second. A main processor that woke every 100 ms to look would empty the battery in days. The ESP32 has a second, very small processor for this: the Ultra Low Power (ULP) coprocessor. It runs while the main cores are in deep sleep, draws only about 150 uA while it runs, and can use the RTC GPIOs, the RTC I2C controller, the ADC and RTC slow memory. Like a night guard who wakes the staff only when something happens, it watches a pin or a sensor and wakes the main processor only when a condition is met.
 
 ### ULP Programming Options
 
-The ESP32 supports two ULP variants:
+There are two kinds of ULP:
 
-- **ULP FSM (Finite State Machine):** The original ULP, programmed in a custom assembly language. Available on all ESP32 chips.
-- **ULP RISC-V:** A newer RISC-V based coprocessor, programmable in C. Only available on ESP32-S2 and ESP32-S3.
+- **ULP FSM (Finite State Machine):** the original ULP, programmed in its own assembly language. It is in every ESP32 chip.
+- **ULP RISC-V:** a newer coprocessor that is programmed in C. It is only in the ESP32-S2 and ESP32-S3.
 
-Since we are using the original ESP32, we will use the ULP FSM with its assembly language. The instruction set is small (about 20 instructions) and designed specifically for low-power sensor monitoring.
+We use the original ESP32, so we use the ULP FSM. Its language is small, about 20 instructions.
 
 ### ULP Assembly Program: GPIO Monitor
 
-The following ULP program monitors GPIO 25 (RTC GPIO 6) and wakes the main processor when it reads LOW. The program runs in a loop, checking the pin at regular intervals:
+The ULP program below reads GPIO 25 (which the RTC part calls RTC GPIO 6) and wakes the main processor when the pin is LOW. The program runs once from `entry` to `halt` each time the ULP timer starts it. In the code, `r0` and `r3` are registers of the ULP, `ld` loads a value from memory and `st` stores one:
 
 ```asm
 /* ulp/monitor_gpio.S
@@ -415,6 +404,7 @@ The following ULP program monitors GPIO 25 (RTC GPIO 6) and wakes the main proce
  */
 
 #include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_io_reg.h"
 #include "soc/soc_ulp.h"
 
     /* Define the GPIO to monitor */
@@ -457,7 +447,7 @@ wake_up:
     halt
 ```
 
-This program uses the `READ_RTC_REG` macro to read the GPIO state, stores it in a shared variable (`gpio_state`) that the main processor can also read, and issues a `wake` instruction if the pin is LOW. The `halt` instruction puts the ULP back to sleep until its next scheduled wakeup (controlled by the ULP timer period set from the main code).
+The macro `READ_RTC_REG` reads the pin. The program stores the result in `gpio_state`, a variable that the main processor can read too, and gives the `wake` instruction if the pin is LOW. The `halt` instruction stops the ULP until its timer starts it again. The main code sets the period of that timer.
 
 ### Loading and Running the ULP from Main Code
 
@@ -466,7 +456,7 @@ The main processor loads the ULP binary, configures the ULP timer period, and st
 ```c
 #include "esp_sleep.h"
 #include "ulp.h"
-#include "ulp/monitor_gpio.h"  /* Generated by the build system */
+#include "ulp_main.h"  /* Generated by the build system */
 #include "driver/rtc_io.h"
 #include "soc/rtc.h"
 
@@ -494,11 +484,11 @@ static void init_ulp_program(void)
     esp_sleep_enable_ulp_wakeup();
 
     /* Start the ULP program (entry point label) */
-    ESP_ERROR_CHECK(ulp_run(&ulp_entry));
+    ESP_ERROR_CHECK(ulp_run(&ulp_entry - RTC_SLOW_MEM));
 }
 ```
 
-The `ulp_set_wakeup_period()` call controls how often the ULP runs its program. At 100 ms intervals, the ULP draws a brief pulse of about 150 uA every 100 ms. Averaged over time, this adds roughly 1 to 2 uA to your sleep current, which is negligible compared to the savings from not waking the main cores.
+`ulp_set_wakeup_period()` sets how often the ULP runs its program. With 100 ms, the ULP draws about 150 uA for a short moment every 100 ms, which adds roughly 1 to 2 uA to the average sleep current; a shorter period adds more, in proportion.
 
 ### ULP CMakeLists.txt
 
@@ -516,7 +506,7 @@ set(ulp_exp_dep_srcs "main.c")
 ulp_embed_binary(${ulp_app_name} "${ulp_sources}" "${ulp_exp_dep_srcs}")
 ```
 
-You also need to enable the ULP in `sdkconfig` or menuconfig. Navigate to **Component config, ULP Co-processor** and set **ULP Co-processor type** to **ULP FSM**. Also enable **Enable ULP Co-processor**.
+You also need to enable the ULP in `sdkconfig` or menuconfig. Navigate to **Component config, Ultra Low Power (ULP) Co-processor**, enable **Enable Ultra Low Power (ULP) Co-processor**, and set **ULP Co-processor type** to **ULP FSM**.
 
 ### Reading ULP Shared Variables from Main Code
 
@@ -539,40 +529,40 @@ void app_main(void)
 }
 ```
 
-The `& 0xFFFF` mask is necessary because ULP variables are 32 bits wide in the memory map but the ULP itself only writes the lower 16 bits. The upper 16 bits contain metadata used by the ULP toolchain.
+The `& 0xFFFF` mask is necessary because ULP variables are 32 bits wide in the memory map but the ULP itself only writes the lower 16 bits. The upper 16 bits hold the register number and the address of the ULP instruction that stored the value.
 
 ## Power Budget Calculation
 
 <InArticleAd />
 
 
-Estimating battery life requires calculating the average current draw over a complete duty cycle. The formula is:
+A battery holds a fixed amount of charge, as a tank holds water. The node draws charge quickly for a few seconds, then very slowly for minutes, and what empties the tank is the average flow over a whole cycle: add the charge of each phase (current times time) and divide by the length of the cycle:
 
 ```
 average_current = (active_time * active_current + sleep_time * sleep_current) / total_cycle_time
 ```
 
+Times are in seconds and currents in mA, so the charge of a phase is in mA s (milliamp seconds). The drawing shows the current through one cycle of 5 minutes (300 s). It is not to scale: the sleep takes 98% of the time.
+
 ```text
- Wake/Sleep Duty Cycle (5-min interval)
  Current
  (mA)
- 150 │        ┌──────┐  Wi-Fi + MQTT
-     │        │      │
- 100 │   ┌────┘      │
-     │   │ Init      │
-  40 │───┘   Sensor  └──┐ Shutdown
-     │                   │
-  20 │                   │
-     │                   └──────────────────
- 0.01│   . . . . . . . . . . Deep Sleep . .
-     └────────────────────────────────────>
-     0s  0.5  1.0     5.0  5.5        300s
-                    Time
+  150 │             ┌─────────────────┐
+      │             │  Wi-Fi + MQTT   │
+      │  Init       │                 │
+   40 ├──────┐      │                 │  Shutdown
+   30 │      │      │                 └──────┐
+   20 │      └──────┘                        │
+      │       Sensor                         │  Deep sleep
+ 0.01 │                                      └────────────
+      └──────┬──────┬─────────────────┬──────┬───────────►
+      0     0.5    1.0               5.0    5.5      300 s
+                           Time
 ```
 
 ### Example: Weather Node with 5-Minute Interval
 
-For our weather node project, a typical cycle looks like this:
+One cycle of the weather node has these phases. The sleep current is that of the chip alone, 10 uA, which is 0.01 mA:
 
 | Phase | Duration | Current Draw |
 |-------|----------|-------------|
@@ -582,50 +572,55 @@ For our weather node project, a typical cycle looks like this:
 | Wi-Fi disconnect and prepare sleep | 0.5 s | 30 mA |
 | Deep sleep | 294.5 s | 0.01 mA |
 
-Total active time: 5.5 seconds at an average of about 100 mA.
-Sleep time: 294.5 seconds at 0.01 mA.
+The node is awake for 5.5 seconds. The charge it uses while awake is
+
+$$
+0.5 \times 40 + 0.5 \times 20 + 4 \times 150 + 0.5 \times 30 = 645\ \text{mA s}
+$$
+
+which is an average of about 117 mA over the 5.5 seconds. The sleep uses 294.5 s × 0.01 mA = 2.945 mA s. The few seconds awake use more than 200 times the charge of the five minutes asleep.
 
 ```
-average_current = (5.5 * 100 + 294.5 * 0.01) / 300
-               = (550 + 2.945) / 300
-               = 552.945 / 300
-               = 1.84 mA
+average_current = (645 + 294.5 * 0.01) / 300
+               = (645 + 2.945) / 300
+               = 647.945 / 300
+               = 2.16 mA
 ```
 
-Two AA alkaline batteries provide roughly 2500 mAh of capacity. Battery life estimate:
+Two AA alkaline batteries in series hold roughly 2500 mAh: they can give 2500 mA for one hour, or 1 mA for 2500 hours. Divide the capacity by the average current to get the battery life:
 
 ```
 battery_life_hours = capacity_mAh / average_current_mA
-                   = 2500 / 1.84
-                   = 1358 hours
-                   = 56.6 days
-                   ~ 2 months
+                   = 2500 / 2.16
+                   = 1157 hours
+                   = 48.2 days
+                   ~ 1.6 months
 ```
 
 ### Extending Battery Life
 
-The biggest factor is the wake interval. Doubling the interval roughly halves the average current:
+Almost all the charge goes to the time awake, so there are two things to change: wake less often, and stay awake for a shorter time. Start with the wake interval. Each row uses the same 5.5 s awake at an average of 117 mA, and 0.01 mA asleep. Twice the interval gives about half the average current:
 
-| Wake Interval | Active Current (avg) | Sleep Current | Average Current | Battery Life (2x AA) |
-|---------------|---------------------|---------------|-----------------|---------------------|
-| 1 minute | 100 mA for 5.5 s | 0.01 mA for 54.5 s | 9.2 mA | 11 days |
-| 5 minutes | 100 mA for 5.5 s | 0.01 mA for 294.5 s | 1.84 mA | 57 days |
-| 15 minutes | 100 mA for 5.5 s | 0.01 mA for 894.5 s | 0.61 mA | 171 days |
-| 30 minutes | 100 mA for 5.5 s | 0.01 mA for 1794.5 s | 0.31 mA | 336 days |
-| 60 minutes | 100 mA for 5.5 s | 0.01 mA for 3594.5 s | 0.15 mA | 1.9 years |
+| Wake Interval | Average Current | Battery Life (2x AA) |
+|---------------|-----------------|---------------------|
+| 1 minute | 10.8 mA | 9.7 days |
+| 5 minutes | 2.16 mA | 48 days |
+| 15 minutes | 0.73 mA | 143 days |
+| 30 minutes | 0.37 mA | 283 days |
+| 60 minutes | 0.19 mA | 1.5 years |
 
-At a 15-minute interval, you get almost 6 months on two AA batteries. At 30 minutes, nearly a full year. The lesson is clear: minimize how often you wake up, and minimize how long each active cycle takes.
+All these figures are for a bare ESP32 module that sleeps at 10 uA. On a development board the regulator, the USB chip and the power LED stay on while the chip sleeps, drawing 5 mA or more. At 5 mA asleep the 5 minute node lasts about 15 days, not 48, and a longer interval hardly helps, because the sleep now uses most of the charge. Measure the sleep current of what you really power.
 
 ## Reducing Active Time
 
 <InArticleAd />
 
 
-The Wi-Fi connection phase dominates active time. A cold Wi-Fi connect with DHCP can take 3 to 6 seconds. Several techniques can cut this to under 1 second.
+The second thing to change is the time awake, most of it the Wi-Fi connection. From nothing it takes 3 to 6 seconds: the chip searches every channel for the access point, then asks the router for an IP address (DHCP). The node knew both answers at its last wake; if it remembers them, the connection takes under 1 second.
 
 ### Store Wi-Fi Channel and BSSID
 
-During a normal Wi-Fi scan, the ESP32 scans all channels to find your access point. If you store the channel and BSSID (the access point's MAC address) in RTC memory, the next connection can skip the scan entirely:
+Normally the ESP32 scans all channels to find your access point. If you store the channel and the BSSID (the MAC address of the access point) in RTC memory, the next connection needs no scan:
 
 ```c
 RTC_DATA_ATTR static uint8_t s_wifi_channel = 0;
@@ -686,7 +681,7 @@ if (s_wifi_info_valid && retry_count > 1) {
 
 ### Use a Static IP Address
 
-DHCP negotiation takes 1 to 3 seconds. If your network allows it, configure a static IP to skip this step entirely:
+Asking the router for an address by DHCP takes 1 to 3 seconds. If your network allows it, give the node a fixed (static) IP address, outside the range that the router gives to other devices:
 
 ```c
 esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
@@ -701,7 +696,7 @@ IP4_ADDR(&ip_info.gw, 192, 168, 1, 1);
 IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
 esp_netif_set_ip_info(sta_netif, &ip_info);
 
-/* Set DNS server manually (required for TLS hostname verification) */
+/* Set DNS server manually (required to resolve the broker hostname) */
 esp_netif_dns_info_t dns_info;
 IP4_ADDR(&dns_info.ip.u_addr.ip4, 8, 8, 8, 8);
 dns_info.ip.type = ESP_IPADDR_TYPE_V4;
@@ -710,7 +705,7 @@ esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info);
 
 ### Combined Savings
 
-With stored Wi-Fi credentials and a static IP, the connection phase drops from 4 seconds to about 0.5 to 1 second. Recalculating the power budget with a 1-second connection time:
+With the stored channel and BSSID and a static IP, the connection phase falls from 4 seconds to about 0.5 to 1 second. The power budget with a connection time of 1 second:
 
 | Phase | Duration | Current Draw |
 |-------|----------|-------------|
@@ -723,14 +718,14 @@ average_current = (2 * 120 + 298 * 0.01) / 300
                = 0.81 mA
 ```
 
-Battery life: 2500 / 0.81 = 3086 hours = 128 days, or about 4 months. That is more than double compared to the unoptimized version at the same 5-minute interval.
+Battery life: $2500 / 0.81 \approx 3086\ \text{hours} \approx 129\ \text{days}$, or about 4 months. That is more than twice the 48 days of the first budget, at the same 5 minute interval.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-The following firmware combines everything covered in this lesson into a single working project: deep sleep with timer and GPIO wake sources, RTC memory for persistent state, ULP coprocessor for GPIO monitoring during sleep, fast Wi-Fi reconnection, MQTT publishing, and power-optimized duty cycling.
+This firmware joins the parts of the lesson: deep sleep with a timer and a GPIO as wake sources, RTC memory, the fast Wi-Fi connection and MQTT publishing. It uses ext0 for the rain pin. The ULP program above is another way to watch that pin and is not part of this firmware.
 
 ```c
 /* main.c -- Battery-Powered Weather Node with Deep Sleep
@@ -740,7 +735,7 @@ The following firmware combines everything covered in this lesson into a single 
  * Reads a DHT22 sensor, connects to Wi-Fi (fast reconnect),
  * publishes data via MQTT, and returns to deep sleep.
  * Tracks boot count and message count in RTC memory.
- * ULP coprocessor monitors the rain sensor GPIO during sleep.
+ * The ext0 wake source watches the rain sensor GPIO during sleep.
  */
 
 #include <string.h>
@@ -820,10 +815,10 @@ static bool dht22_read(float *temperature, float *humidity)
     uint8_t data[5] = {0};
     int bit_idx = 0;
 
-    /* Send start signal: pull low for 1 ms, then release */
+    /* Send start signal: pull low for 2 ms, then release */
     gpio_set_direction(DHT22_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(DHT22_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    esp_rom_delay_us(2000);
     gpio_set_level(DHT22_GPIO, 1);
     esp_rom_delay_us(30);
 
@@ -1244,19 +1239,19 @@ void app_main(void)
 
 ### How the Firmware Works
 
-The firmware follows a simple one-shot pattern that repeats with every deep sleep wake cycle:
+The firmware runs once from top to bottom at every wake:
 
-1. **Boot and identify wake cause.** The boot count increments in RTC memory, and the wake reason is determined. On a cold boot (first power-on), the wake cause is `ESP_SLEEP_WAKEUP_UNDEFINED`.
+1. **Start and find the wake cause.** The boot count in RTC memory rises by one. On a cold start the cause is `ESP_SLEEP_WAKEUP_UNDEFINED`.
 
-2. **Read the DHT22 sensor.** Three attempts are made with 500 ms delays between them. If all attempts fail (which can happen if the sensor is still stabilizing after a cold start), the firmware falls back to the last successful readings stored in RTC memory.
+2. **Read the DHT22.** The firmware tries three times, 500 ms apart. If all three fail, it sends the last good readings from RTC memory. Note the weakness: the receiver cannot tell these old values from new ones.
 
-3. **Connect to Wi-Fi with fast reconnect.** If the RTC memory contains a valid Wi-Fi channel and BSSID from a previous cycle, the ESP32 skips the channel scan and connects directly. This typically reduces the connection time from 4 seconds to under 1 second. If the fast connect fails twice, the saved info is invalidated and a full scan runs on the next attempt.
+3. **Connect to Wi-Fi.** If RTC memory holds a valid channel and BSSID, the ESP32 connects without a scan, in under 1 second. If the fast connection fails twice, the saved values are marked invalid and the next attempt scans.
 
-4. **Publish via MQTT.** The weather data, boot count, message count, and wake reason are published as a JSON payload to the weather topic. An online status message with the retain flag is also published. The MQTT client is created, used, and destroyed within this single cycle.
+4. **Publish by MQTT.** The readings, the boot count, the message count and the wake reason go to the weather topic as JSON, a common text format for data. A retained "online" status follows. The MQTT client is created, used and destroyed inside this one cycle.
 
-5. **Enter deep sleep.** Two wake sources are configured: a 5-minute timer for periodic readings, and ext0 on GPIO 25 for an immediate wake when the rain sensor triggers. The RTC GPIO pull-up is configured, and the chip enters deep sleep.
+5. **Sleep.** Two wake sources are enabled: the 5 minute timer and ext0 on GPIO 25 for the rain sensor. The RTC pull-up is switched on and the chip enters deep sleep.
 
-Each cycle completes in about 2 to 6 seconds depending on whether a fast or full Wi-Fi connect is needed. During the remaining time (294+ seconds), the chip draws under 10 uA.
+A cycle takes about 2 to 6 seconds, depending on the kind of Wi-Fi connection. For the rest of the 300 seconds the chip itself draws about 10 uA.
 
 ## CMakeLists.txt and Kconfig Files
 
@@ -1406,7 +1401,7 @@ endmenu
 </Steps>
 
 :::tip[Instrument it]
-A remote sensor that flattens its battery in a week is not a monitor, it is a chore. Deep sleep is what makes battery-powered monitoring practical: wake on a timer or an interrupt, take the reading, publish, and drop back to microamps, so a couple of AA cells or a small LiPo can run a node for months. Match the wake interval to how fast the thing you watch actually changes, then the node can [report on schedule](/education/iot-systems/) to [siliconwit.io](https://siliconwit.io) and still be alive next season.
+A remote sensor that needs new batteries every week will soon be left without them. Deep sleep makes battery monitoring practical: wake on a timer or a pin, take the reading, publish, and return to microamps, so two AA cells can run a node for months. Match the wake interval to how fast the thing you watch really changes. Then the node can [report on schedule](/education/iot-systems/) to [siliconwit.io](https://siliconwit.io) and still be running next season.
 :::
 
 ## Measuring Current Draw
@@ -1414,7 +1409,7 @@ A remote sensor that flattens its battery in a week is not a monitor, it is a ch
 <InArticleAd />
 
 
-To verify your power budget calculations, you need to measure the actual current consumption. A multimeter with a microamp (uA) range is sufficient for deep sleep measurements.
+A power budget is a prediction. Measure the real current before you trust it, and above all the sleep current, because it flows for 98% of the time. A multimeter with a microamp (uA) range is enough for deep sleep.
 
 ### Measurement Setup
 
@@ -1425,47 +1420,55 @@ To verify your power budget calculations, you need to measure the actual current
 
 3. Connect the multimeter in series with the battery positive lead. The positive battery terminal connects to the multimeter's mA/uA input. The multimeter's COM output connects to the ESP32's 3.3V pin (or VIN, depending on your battery voltage).
 
-4. Power on the circuit. The ESP32 will boot, run through its active cycle, and enter deep sleep.
+4. Power on the circuit. The ESP32 starts, runs its active cycle and enters deep sleep.
 </Steps>
+
+On its uA range a multimeter has a high internal resistance and often a small fuse. The Wi-Fi burst of more than 100 mA can then reset the chip or blow the fuse. Bridge the meter with a jumper wire while the chip is awake, and remove the jumper once it sleeps.
 
 ### Expected Readings
 
+The first four rows are for the chip alone: a bare module on its own board. The last row is for a whole development board.
+
 | State | Expected Reading | Notes |
 |-------|-----------------|-------|
-| Deep sleep (RTC peripherals on) | 10 to 15 uA | With ext0 GPIO wake enabled |
-| Deep sleep (RTC peripherals off) | 5 to 10 uA | Timer-only wake |
-| Deep sleep with ULP running | 15 to 150 uA | Depends on ULP wake frequency |
+| Deep sleep, chip alone | About 10 uA | The figure used in every calculation in this lesson. Keeping the RTC peripherals on for the ext0 pull-up adds a few uA, too little to change the budget |
+| Deep sleep with ULP running | 15 to 150 uA | Depends on how often the ULP runs |
 | Active (CPU only, no Wi-Fi) | 30 to 50 mA | Reading sensors, processing |
-| Active (Wi-Fi connecting) | 100 to 160 mA | Scanning channels |
-| Active (Wi-Fi TX) | 180 to 260 mA | Transmitting data |
+| Active (Wi-Fi) | 100 to 260 mA | About 100 to 160 mA while connecting, 180 to 260 mA while transmitting |
+| Deep sleep, whole development board | 5 to 20 mA | Regulator, USB-to-UART chip and LEDs stay on |
 
 :::note
-Many ESP32 development boards have onboard LEDs, voltage regulators, and USB-to-UART chips that draw 5 to 20 mA even during deep sleep. For accurate low-power measurements, you need to either desolder these components, cut the power LED trace, or use a bare ESP32 module on a custom PCB. The current readings above assume a bare module or a board with power LED disabled.
+On most development boards the chip sleeps at 10 uA while the parts around it draw 5 to 20 mA: 500 to 2,000 times more. If your meter shows milliamps in deep sleep, the firmware is probably correct and the board is the cause. To reach the chip figure you must remove these parts from the supply (for example cut the trace of the power LED), or use a bare ESP32 module on your own board.
 :::
 
 ### Using a Current Profiler
 
-For more detailed analysis, dedicated current profiling tools like the Nordic Power Profiler Kit II or the Joulescope can capture current waveforms over time. These tools show you the exact current profile of each phase (boot, sensor read, Wi-Fi scan, TX burst, sleep entry) and help identify unexpected current spikes or components that fail to power down.
+A current profiler, such as the Nordic Power Profiler Kit II or the Joulescope, records the current against time. It shows each phase (start, sensor read, Wi-Fi scan, transmit burst, sleep) and so shows a part that does not switch off.
 
 ## Exercises
 
 <InArticleAd />
 
 
-1. **Implement adaptive sleep intervals.** Modify the firmware so that the sleep duration adjusts based on conditions. If the temperature is changing rapidly (more than 2 degrees between consecutive readings, as stored in RTC memory), reduce the sleep interval to 1 minute to capture the change. If the temperature has been stable for 10 consecutive readings, extend the interval to 15 minutes to conserve battery. Store the stability counter in RTC memory. Add the current sleep interval to the MQTT payload so you can monitor the adaptation from MQTT Explorer.
+1. **Adaptive sleep interval.** If the temperature changed by more than 2 degrees since the last reading (kept in RTC memory), sleep for 1 minute. If it has been steady for 10 readings, sleep for 15 minutes. Keep the counter in RTC memory and add the present interval to the MQTT payload, so that you can watch the change in MQTT Explorer.
 
-2. **Add light sleep between sensor read and Wi-Fi connect.** After reading the DHT22, enter light sleep for 100 ms before starting Wi-Fi. This is a small optimization, but it demonstrates the difference between light sleep and deep sleep. With light sleep, execution resumes from the exact point where it paused, so you do not lose your sensor readings or local variables. Measure the current draw during this light sleep phase with a multimeter and compare it to the active mode current.
+2. **Light sleep between sensor read and Wi-Fi.** After reading the DHT22, enter light sleep for 100 ms before starting Wi-Fi. The program continues where it paused, so the readings in local variables are still there. Measure the current in this phase with a multimeter and compare it with the active current.
 
-3. **Build a multi-sensor node with ULP threshold monitoring.** Add a photoresistor (LDR) to an ADC input and write a ULP program that samples the light level every 500 ms during deep sleep. When the light drops below a threshold (indicating nighttime or heavy clouds), the ULP wakes the main processor to send an alert. The main processor should also read and publish the light level alongside the DHT22 data in each regular timer-triggered cycle. Store the ULP-measured light threshold in RTC memory so the main code can adjust it via MQTT commands.
+3. **ULP threshold on a light sensor.** Add a photoresistor (LDR) to an ADC input and write a ULP program that samples the light level every 500 ms in deep sleep. When the light falls below a threshold, the ULP wakes the main processor to send an alert. Publish the light level with the DHT22 data at each timed wake. Keep the threshold in RTC memory so that the main code can change it by an MQTT command.
 
-4. **Implement a battery voltage monitor with low-battery shutdown.** The ESP32 can read its own supply voltage using the ADC. Add a voltage divider (two resistors) from the battery positive terminal to an ADC1 input, and read the battery voltage at the start of each wake cycle. Include the battery voltage and estimated remaining percentage in the MQTT payload. When the voltage drops below 2.4V (indicating nearly depleted AA cells), publish a "low-battery" alert and increase the sleep interval to 30 minutes to squeeze out the last bit of battery life. Store the low-battery state in RTC memory so the device stays in conservation mode across reboot cycles.
+4. **Battery voltage and low-battery mode.** Add a voltage divider (two resistors) from the battery positive terminal to an ADC1 input and read the battery voltage at the start of each wake. Publish it. Below 2.4V (two AA cells nearly empty), publish a "low-battery" alert and raise the sleep interval to 30 minutes. Keep the low-battery state in RTC memory.
 
 ## Summary
 
 <InArticleAd />
 
 
-You explored the ESP32's five power modes, from the 260 mA peak of active Wi-Fi transmission down to the 5 uA hibernation state. Deep sleep is the practical choice for most battery-powered applications, providing under 10 uA current draw while preserving 8 KB of RTC slow memory for persistent state across sleep cycles. You learned to configure multiple wake sources simultaneously (timer, ext0 GPIO, ext1 multi-GPIO, touch pad, and ULP), and to determine the wake cause with `esp_sleep_get_wakeup_cause()` so your firmware can respond appropriately to each trigger type. The `RTC_DATA_ATTR` and `RTC_NOINIT_ATTR` attributes let you keep boot counters, sensor readings, Wi-Fi connection info, and state machine positions alive across deep sleep resets. The ULP coprocessor, programmed in its dedicated assembly language, monitors GPIOs during deep sleep at a cost of only 1 to 2 uA averaged, waking the main processor only when a threshold is crossed. Power budget calculations showed that a 5-minute wake interval with fast Wi-Fi reconnection yields about 4 months of battery life on two AA cells, extending to nearly a year at 30-minute intervals. The complete weather node firmware demonstrated the one-shot design pattern for deep sleep applications: boot, identify wake cause, read sensors, connect fast, publish, and sleep again.
+- The ESP32 has five power modes, from a peak of 260 mA with Wi-Fi transmitting to about 5 uA in hibernation. Deep sleep, at about 10 uA for the chip alone, is the usual choice for a battery node.
+- Waking from deep sleep is a reset. `app_main()` starts from its first line, and only the 8 KB of RTC slow memory keeps its contents. `RTC_DATA_ATTR` and `RTC_NOINIT_ATTR` place counters, last readings and Wi-Fi details there.
+- Several wake sources can be enabled together (timer, ext0, ext1, touch pad, ULP), and `esp_sleep_get_wakeup_cause()` says which one fired. Only RTC GPIOs can wake the chip.
+- The ULP coprocessor watches a pin during deep sleep for an average of only 1 to 2 uA and wakes the main processor when a condition is met.
+- The power budget is the charge of each phase, added and divided by the cycle time. With a bare module, the seconds awake use nearly all of the charge: wake less often and connect faster. A 5 minute interval with the fast connection gives about 4 months on two AA cells.
+- A development board draws milliamps while the chip sleeps. Measure the sleep current of what you really power before you trust any estimate.
 
 <EmbeddedProgrammingEsp32Comments />
 

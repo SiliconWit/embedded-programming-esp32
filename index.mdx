@@ -11,7 +11,7 @@ import Copyright from '../../../../components/Copyright.astro';
 import TawkWidget from '../../../../components/TawkWidget.astro';
 import { Card, CardGrid, Badge, Steps } from '@astrojs/starlight/components';
 
-The ESP32 brings Wi-Fi and Bluetooth to embedded systems for under $5. This course teaches you to build connected devices using ESP-IDF (the official framework), not Arduino wrappers. Each lesson produces a working networked project, progressing from local peripherals to cloud-connected IoT nodes with OTA updates and battery optimization. #ESP32 #IoT #EmbeddedSystems
+The ESP32 brings Wi-Fi and Bluetooth to embedded systems for under 5 USD. This course teaches you to build connected devices using ESP-IDF (the official framework), not Arduino wrappers. Each lesson produces a working networked project, progressing from local peripherals to cloud-connected IoT nodes with OTA updates and battery optimization. #ESP32 #IoT #EmbeddedSystems
 
 ## Why ESP-IDF?
 
@@ -58,47 +58,47 @@ Each lesson follows a consistent cycle:
 
 <CardGrid>
   <Card title="Lesson 1: ESP-IDF Toolchain and Dual-Core Architecture" icon="star">
-    [ESP-IDF Toolchain and Dual-Core Architecture](./esp-idf-toolchain-dual-core). Install ESP-IDF, understand menuconfig, partition tables, and the dual-core FreeRTOS model. Build an RGB mood lamp where one core runs color animations and the other handles serial commands.
+    [ESP-IDF Toolchain and Dual-Core Architecture](/education/embedded-programming-esp32/esp-idf-toolchain-dual-core/). Install ESP-IDF, understand menuconfig, partition tables, and the dual-core FreeRTOS model. Build an RGB mood lamp where one core runs color animations and the other handles serial commands.
     **Build:** RGB mood lamp. **Parts:** ESP32 DevKitC, RGB LED (common cathode), resistors.
   </Card>
 
   <Card title="Lesson 2: GPIO, Peripherals, and Driver Framework" icon="document">
-    [GPIO, Peripherals, and Driver Framework](./gpio-peripherals-driver-framework). Explore the GPIO matrix, LEDC PWM controller, pulse counter (PCNT), and RMT peripheral. Build a capacitive touch lamp dimmer using the ESP32's built-in touch pins.
+    [GPIO, Peripherals, and Driver Framework](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/). Explore the GPIO matrix, LEDC PWM controller, pulse counter (PCNT), and RMT peripheral. Build a capacitive touch lamp dimmer using the ESP32's built-in touch pins.
     **Build:** Capacitive touch lamp dimmer. **Parts:** Bright LED or small LED strip.
   </Card>
 
   <Card title="Lesson 3: Wi-Fi and Network Configuration" icon="document">
-    [Wi-Fi and Network Configuration](./wifi-network-configuration). Master the Wi-Fi driver: STA/AP/STA+AP modes, event model, SmartConfig provisioning, and scan capabilities. Build a Wi-Fi signal mapper that scans nearby access points and serves results as a webpage.
+    [Wi-Fi and Network Configuration](/education/embedded-programming-esp32/wifi-network-configuration/). Master the Wi-Fi driver: STA/AP/STA+AP modes, event model, SmartConfig provisioning, and scan capabilities. Build a Wi-Fi signal mapper that scans nearby access points and serves results as a webpage.
     **Build:** Wi-Fi signal mapper. **Parts:** No new parts.
   </Card>
 
   <Card title="Lesson 4: HTTP Server and REST API" icon="document">
-    [HTTP Server and REST API](./http-server-rest-api). Build an HTTP server with RESTful endpoints, JSON parsing, mDNS discovery, and a responsive web UI served from SPIFFS. Build a browser-controlled thermostat with real sensor input.
+    [HTTP Server and REST API](/education/embedded-programming-esp32/http-server-rest-api/). Build an HTTP server with RESTful endpoints, JSON parsing, mDNS discovery, and a responsive web UI served from SPIFFS. Build a browser-controlled thermostat with real sensor input.
     **Build:** Browser-controlled thermostat. **Parts:** DHT22 temperature/humidity sensor, relay module.
   </Card>
 
   <Card title="Lesson 5: MQTT and Cloud Communication" icon="document">
-    [MQTT and Cloud Communication](./mqtt-cloud-communication). Implement MQTT with QoS levels, TLS encryption, persistent sessions, and last will messages. Build a plant soil moisture monitor that sends alerts to your phone via a free MQTT broker.
+    [MQTT and Cloud Communication](/education/embedded-programming-esp32/mqtt-cloud-communication/). Implement MQTT with QoS levels, TLS encryption, persistent sessions, and last will messages. Build a plant soil moisture monitor that sends alerts to your phone via a free MQTT broker.
     **Build:** Soil moisture monitor with alerts. **Parts:** Capacitive soil moisture sensor.
   </Card>
 
   <Card title="Lesson 6: Bluetooth Low Energy (BLE)" icon="document">
-    [Bluetooth Low Energy](./bluetooth-low-energy-ble). Implement GAP and GATT: advertising, scanning, services, characteristics, notifications. Handle BLE and Wi-Fi coexistence. Build a BLE environmental beacon that any phone can read.
+    [Bluetooth Low Energy](/education/embedded-programming-esp32/bluetooth-low-energy-ble/). Implement GAP and GATT: advertising, scanning, services, characteristics, notifications. Handle BLE and Wi-Fi coexistence. Build a BLE environmental beacon that any phone can read.
     **Build:** BLE environmental beacon. **Parts:** Reuse DHT22.
   </Card>
 
   <Card title="Lesson 7: OTA Updates and Secure Boot" icon="document">
-    [OTA Updates and Secure Boot](./ota-updates-secure-boot). Configure OTA partition schemes, implement firmware rollback, enable flash encryption and secure boot v2, and sign firmware images. Build a remotely updateable sensor node.
+    [OTA Updates and Secure Boot](/education/embedded-programming-esp32/ota-updates-secure-boot/). Configure OTA partition schemes, implement firmware rollback, enable flash encryption and secure boot v2, and sign firmware images. Build a remotely updateable sensor node.
     **Build:** OTA-updateable sensor node. **Parts:** Reuse existing.
   </Card>
 
   <Card title="Lesson 8: Power Management and Deep Sleep" icon="document">
-    [Power Management and Deep Sleep](./power-management-deep-sleep). Master deep sleep modes, ULP coprocessor programming, RTC memory persistence, and multiple wake sources. Build a solar-ready weather node optimized for months of battery life.
+    [Power Management and Deep Sleep](/education/embedded-programming-esp32/power-management-deep-sleep/). Master deep sleep modes, ULP coprocessor programming, RTC memory persistence, and multiple wake sources. Build a solar-ready weather node optimized for months of battery life.
     **Build:** Solar-ready weather node. **Parts:** 2xAA battery holder.
   </Card>
 
   <Card title="Lesson 9: Capstone: Connected Sensor Network" icon="document">
-    [Connected Sensor Network Project](./connected-sensor-network-project). Combine everything: build a two-node system with an outdoor sensor (battery, deep sleep, MQTT publish) and an indoor display (OLED, always-on, MQTT subscribe). A complete IoT deployment.
+    [Connected Sensor Network Project](/education/embedded-programming-esp32/connected-sensor-network-project/). Combine everything: build a two-node system with an outdoor sensor (battery, deep sleep, MQTT publish) and an indoor display (OLED, always-on, MQTT subscribe). A complete IoT deployment.
     **Build:** Two-node sensor network. **Parts:** SSD1306 OLED (or reuse from prior courses).
   </Card>
 </CardGrid>
@@ -107,16 +107,16 @@ Each lesson follows a consistent cycle:
 
 | Part | Quantity | First Used | Approximate Cost |
 |------|----------|------------|-----------------|
-| ESP32 DevKitC | 1-2 | Lesson 1 | $4-6 each |
-| RGB LED (common cathode) + resistors | 1 | Lesson 1 | $0.50 |
-| Bright LED or small LED strip | 1 | Lesson 2 | $1-2 |
-| DHT22 temperature/humidity sensor | 1 | Lesson 4 | $2-3 |
-| Relay module (5V, 1-channel) | 1 | Lesson 4 | $1 |
-| Capacitive soil moisture sensor | 1 | Lesson 5 | $1-2 |
-| 2xAA battery holder | 1 | Lesson 8 | $0.50 |
-| SSD1306 OLED display | 1 | Lesson 9 | $3-4 |
+| ESP32 DevKitC | 1-2 | Lesson 1 | 4 to 6 USD each |
+| RGB LED (common cathode) + resistors | 1 | Lesson 1 | 0.50 USD |
+| Bright LED or small LED strip | 1 | Lesson 2 | 1 to 2 USD |
+| DHT22 temperature/humidity sensor | 1 | Lesson 4 | 2 to 3 USD |
+| Relay module (5V, 1-channel) | 1 | Lesson 4 | 1 USD |
+| Capacitive soil moisture sensor | 1 | Lesson 5 | 1 to 2 USD |
+| 2xAA battery holder | 1 | Lesson 8 | 0.50 USD |
+| SSD1306 OLED display | 1 | Lesson 9 | 3 to 4 USD |
 
-**Total estimated cost: $18-28** (with two ESP32 DevKitC boards for the capstone)
+**Total estimated cost: 18 to 28 USD** (with two ESP32 DevKitC boards for the capstone)
 
 ## Skill Progression
 

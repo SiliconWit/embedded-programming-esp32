@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Most microcontrollers have fixed pin assignments, but the ESP32's GPIO matrix lets you route almost any peripheral signal to almost any pin. In this lesson you will explore that flexibility along with the LEDC PWM engine, pulse counter, and RMT driver. The project is a lamp dimmer that requires no external buttons: just touch the bare wire connected to a touch-capable GPIO and the LED smoothly fades up or down. #ESP32 #GPIO #TouchSensor
+A push button is the part of a lamp that fails first: it wears, it lets water in, and it needs a hole in the case. A touch pad has no moving part, but a touch pad that is set up badly switches the lamp when nobody is near it. In this lesson you build a dimmer whose only control is a bare wire: a short touch switches the LED, a long touch fades it, and the brightness is remembered when power returns. On the way you learn how the ESP32 connects its internal hardware to its pins, how it makes smooth PWM, and how it saves a value in flash. #ESP32 #GPIO #TouchSensor
 
 ## What We Are Building
 
 <Card title="Capacitive Touch Lamp Dimmer" icon="star">
-A lamp dimmer with no mechanical switches. The ESP32's built-in capacitive touch sensor detects your finger on a bare wire or copper pad. A short touch toggles the lamp on and off; a long press smoothly ramps brightness up or down using the LEDC PWM peripheral. The firmware debounces touch events and stores the last brightness level in NVS flash.
+A lamp dimmer with no mechanical switch. The ESP32's touch sensor detects your finger on a bare wire or copper pad. A short touch switches the lamp on or off. A long touch raises or lowers the brightness through LEDC, the PWM hardware of the ESP32. The firmware ignores readings that last too short a time to be a finger, and saves the last brightness in NVS, the small store of saved values in flash.
 </Card>
 
 **Project specifications:**
@@ -51,7 +51,7 @@ A lamp dimmer with no mechanical switches. The ESP32's built-in capacitive touch
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from Lesson 1 |
+| U1 | ESP32 DevKitC | 1 | The board you used for the mood lamp |
 | D1 | High-brightness white LED (or small LED strip) | 1 | 20mA for single LED, MOSFET for strip |
 | R1 | 100 ohm resistor | 1 | Adjust for your LED |
 | | Bare wire or copper tape | 1 piece | Touch pad (connect to GPIO4) |
@@ -62,12 +62,13 @@ A lamp dimmer with no mechanical switches. The ESP32's built-in capacitive touch
 <InArticleAd />
 
 
-Most microcontrollers wire each peripheral to a fixed set of pins. The ESP32 takes a different approach: a programmable routing fabric called the GPIO matrix sits between the internal peripheral signals and the physical pins. You can connect almost any peripheral output to almost any GPIO, and route almost any GPIO to almost any peripheral input. This is why you see ESP32 projects assigning SPI, I2C, UART, and PWM to seemingly arbitrary pins.
+A peripheral is hardware inside the chip that does one job: a PWM generator, a serial port (UART), an SPI bus. On most microcontrollers each peripheral has fixed pins, so two parts that need the same pin mean a new board.
+
+The ESP32 puts a switchboard, the GPIO matrix, between the peripherals and the pins, as an old telephone exchange did between callers. In software you connect almost any peripheral signal to almost any pin, which is why ESP32 projects put PWM, UART and SPI on pins that look freely chosen.
 
 ### How Signal Routing Works
 
 ```text
- ESP32 GPIO Matrix Signal Routing
  ┌──────────┐    ┌──────────────┐    ┌──────────┐
  │Peripheral│    │  GPIO Matrix │    │ Physical │
  │ Signals  │    │              │    │  Pads    │
@@ -83,13 +84,13 @@ Most microcontrollers wire each peripheral to a fixed set of pins. The ESP32 tak
   ~25 ns delay per routing stage
 ```
 
-The GPIO matrix maintains two routing tables. The output matrix maps peripheral signals to GPIO pads, and the input matrix maps GPIO pads to peripheral inputs. When you configure LEDC channel 0 to output on GPIO18, the GPIO matrix programs one entry in the output table: "peripheral signal X goes to pad 18." When you configure UART RX on GPIO16, the input table gets an entry: "pad 16 feeds into UART RX."
+The matrix keeps two tables, one for each direction. LEDC channel 0 on GPIO18 is one entry in the output table ("this signal goes to pad 18"); the UART receive line on GPIO16 is one entry in the input table ("pad 16 feeds UART RX"). The driver writes these entries when you give it a pin number.
 
-Some signals bypass the matrix entirely for better timing. These are called "direct I/O" or "dedicated GPIO" connections. The SPI flash interface, JTAG pins, and the high-speed SD card interface use direct connections because the matrix adds about 25 ns of propagation delay per stage. For LEDC PWM, touch sensing, and general-purpose I/O, the matrix delay is negligible.
+The switchboard costs time: about 25 ns for each pass. For PWM, touch and ordinary inputs and outputs that does not matter. The fastest signals (the SPI flash, the debug port, the fast SD card interface) do not go through the matrix. They have fixed pins.
 
 ### GPIO Configuration with `gpio_config()`
 
-The ESP-IDF provides `gpio_config()` as the primary way to set up GPIO pins. You fill a `gpio_config_t` structure describing the direction, pull resistors, and interrupt behavior, then pass it in:
+A pin used as a plain input or output is set up with `gpio_config()`. You fill a structure with the direction, the pull resistors and the interrupt setting. A pull resistor is a weak internal resistor that holds an input at a known level (high for pull-up, low for pull-down) when nothing drives it.
 
 ```c
 #include "driver/gpio.h"
@@ -104,40 +105,36 @@ gpio_config_t io_conf = {
 gpio_config(&io_conf);
 ```
 
-The `pin_bit_mask` field is a 64-bit mask, so you can configure multiple pins in one call by OR-ing their bit positions together. For input pins, set `.mode = GPIO_MODE_INPUT` and enable a pull-up or pull-down as needed.
+In `pin_bit_mask`, each bit stands for one pin: bit 2 set means GPIO2. To set up several pins in one call, join their bits with the OR operator `|`. For an input, use `.mode = GPIO_MODE_INPUT` and enable a pull-up or pull-down if the signal needs one.
 
 ### Pin Limitations
 
-Not every GPIO is fully flexible. Keep these restrictions in mind:
+Some pins have a second job that you must not disturb. The most common trap is a strapping pin: a pin that the chip reads once at power-on to decide how to start. If your circuit holds a strapping pin at the wrong level, the board does not boot.
 
 | GPIO Range | Limitation |
 |------------|-----------|
-| GPIO 34, 35, 36, 39 | Input only. No internal pull-up or pull-down. Cannot drive outputs. |
+| GPIO 34 to 39 | Input only. No internal pull-up or pull-down. Cannot drive outputs. The DevKitC brings out 34, 35, 36 and 39. |
 | GPIO 0 | Strapping pin. Directly affects boot mode. Pulled high internally. Avoid using for general I/O unless you understand the boot sequence. |
 | GPIO 2 | Strapping pin. Must be low or floating during boot for flash download mode. |
+| GPIO 5 | Strapping pin. Sets the timing of the SDIO slave interface at boot. Pulled high internally. |
 | GPIO 12 | Strapping pin. Sets flash voltage at boot (low = 3.3V, high = 1.8V). Pulling high can prevent boot on some modules. |
 | GPIO 15 | Strapping pin. Controls UART0 debug output at boot. |
 | GPIO 6, 7, 8, 9, 10, 11 | Connected to the internal SPI flash. Do not use on modules with a single flash chip (WROOM-32). |
 
-For this project, we use GPIO18 for the LED output and GPIO4 for the touch input. Both are safe, general-purpose pins with no strapping restrictions.
+This project uses GPIO18 for the LED and GPIO4 for the touch pad. Neither is a strapping pin.
 
 ## LEDC PWM Controller
 
 <InArticleAd />
 
 
-You used LEDC in Lesson 1 at 8-bit resolution. Now we configure it at 13-bit resolution (8192 steps) and 5 kHz, which gives much smoother dimming, especially at low brightness levels where the human eye is most sensitive to step changes.
+The mood lamp used 8 bits of resolution: 256 brightness steps. For a dimmer that is too coarse: the eye notices small changes most in dim light, and near the bottom of an 8-bit scale each step is a visible jump. This lesson uses 13 bits: 8192 steps at 5 kHz.
+
+Resolution and frequency share one clock. The timer counts pulses of an 80 MHz clock, and one PWM period must hold at least as many pulses as there are steps. At 5 kHz a period holds 80,000,000 / 5,000 = 16,000 pulses, enough for 8192 steps, so 13 bits fit. A higher frequency leaves fewer pulses per period, so the highest possible resolution falls.
 
 ### Timer Groups
 
-The LEDC peripheral has two groups of timers:
-
-| Group | Timers | Channels | Clock Source |
-|-------|--------|----------|-------------|
-| High-speed | Timer 0, 1, 2, 3 | Channel 0 through 7 | 80 MHz APB clock or REF_TICK |
-| Low-speed | Timer 0, 1, 2, 3 | Channel 0 through 7 | 80 MHz APB clock or REF_TICK or slow clock |
-
-In ESP-IDF v5.x, most applications use `LEDC_LOW_SPEED_MODE` because the high-speed mode is not available on some ESP32 variants (ESP32-S2, ESP32-C3). Low-speed mode is portable across the entire ESP32 family. The functional difference is minimal for LED dimming.
+LEDC has two groups, high-speed and low-speed, each with four timers and eight channels. Use `LEDC_LOW_SPEED_MODE`: some newer chips of the family (ESP32-S2, ESP32-C3) have no high-speed group, and for dimming an LED you will see no difference.
 
 ### Configuration
 
@@ -178,11 +175,11 @@ void ledc_pwm_init(void)
 }
 ```
 
-The `ledc_fade_func_install(0)` call registers an ISR handler that the LEDC fade engine uses to signal completion. Pass 0 for the interrupt allocation flags (default priority). You must call this once before using any fade functions.
+Call `ledc_fade_func_install(0)` once before any fade function. It installs the interrupt handler by which the hardware reports a finished fade; the 0 selects the default interrupt settings.
 
 ### Hardware Fade Functions
 
-Instead of manually stepping the duty cycle in a loop (which wastes CPU time), the LEDC peripheral has a built-in fade engine that ramps between two duty values over a specified time. The CPU starts the fade and the hardware handles the rest:
+A loop that changes the duty a little, waits and repeats keeps a task busy for the whole fade. LEDC can fade by itself: give it the target duty and the time, and the hardware changes the duty step by step.
 
 ```c
 /* Fade from current duty to target_duty over 1000 ms */
@@ -190,24 +187,22 @@ ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL, target_duty, 1000);
 ledc_fade_start(LEDC_MODE, LEDC_CHANNEL, LEDC_FADE_NO_WAIT);
 ```
 
-The `LEDC_FADE_NO_WAIT` flag returns immediately so your task can do other work while the fade runs. Use `LEDC_FADE_WAIT_DONE` if you need to block until the fade completes.
-
-There is also `ledc_set_fade_with_step()` for finer control over step size and interval. For our lamp dimmer, `ledc_set_fade_with_time()` is simpler and works well.
+With `LEDC_FADE_NO_WAIT` the call returns at once and your task continues while the fade runs. With `LEDC_FADE_WAIT_DONE` the task waits until the fade ends. `ledc_set_fade_with_step()` lets you choose the step size and interval yourself.
 
 ### Why Hardware PWM Beats Software PWM
 
-Software PWM toggles a GPIO pin in a timer ISR or a tight loop. On a single-core MCU running a busy RTOS, ISR jitter causes visible flicker. The LEDC peripheral generates the PWM waveform in dedicated hardware with zero CPU involvement after setup. It also survives light-sleep mode (in low-speed mode with the slow clock), which software PWM cannot.
+Software PWM switches the pin from your own code. Each time another task or interrupt delays that code, a pulse comes out too long or too short, and the eye sees flicker. LEDC makes the waveform in hardware, so after setup its timing does not depend on what the processor is doing. In low-speed mode with the slow clock it also continues in light sleep, when your code does not run at all.
 
 ## Capacitive Touch Sensor
 
 <InArticleAd />
 
 
-The ESP32 has a built-in capacitive touch controller that works with bare copper pads, wires, or PCB traces. No external components are needed. When you touch the pad, your body's capacitance changes the charge/discharge timing on the pin, and the touch controller measures that change.
+The ESP32 can sense a finger on a bare wire, a copper pad or a track on a circuit board, with no other parts. It does this by measuring capacitance, the ability of a conductor to hold electric charge. Your body holds charge too, so a finger on the pad makes the capacitance larger.
 
 ### Touch-Capable GPIOs
 
-Ten GPIOs support capacitive touch sensing:
+Ten GPIOs can sense touch:
 
 | Touch Channel | GPIO |
 |--------------|------|
@@ -222,34 +217,30 @@ Ten GPIOs support capacitive touch sensing:
 | Touch8 | GPIO 33 |
 | Touch9 | GPIO 32 |
 
-For this project we use Touch0 on GPIO4, which has no strapping conflicts.
+This project uses Touch0 on GPIO4, which is not a strapping pin.
 
 ### How Capacitive Sensing Works
 
+Think of the pad as a bucket that the chip fills with charge and empties, over and over, counting the fills in a fixed time. A finger makes the bucket larger, each fill takes longer, and fewer fills fit in the time.
+
 ```text
- Capacitive Touch Sensing
- ┌──────────────────────────────────┐
- │  No Touch         With Touch    │
- │                                  │
- │  GPIO4 ─┐         GPIO4 ─┐     │
- │         ─┤─ Wire          ─┤─   │
- │          │                 │    │
- │    Low C │           High C│    │
- │          │            ┌────┤    │
- │          │            │Finger   │
- │          │            └────┘    │
- │                                  │
- │  Fast cycling      Slow cycling │
- │  High count        Low count    │
- │  = not touched     = touched    │
- └──────────────────────────────────┘
+  no touch                 finger on the pad
+
+  small capacitance        large capacitance
+  quick to charge          slow to charge
+
+  ┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐         ┌──┐  ┌──┐  ┌──┐
+  ┘└┘└┘└┘└┘└┘└┘└┘└         ┘  └──┘  └──┘  └─
+
+  many cycles counted      few cycles counted
+  reading is HIGH          reading is LOW
 ```
 
-The touch controller charges each touch pad to a reference voltage, then counts how many charge/discharge cycles occur within a fixed measurement window. When nothing is touching the pad, the count is high (low capacitance, fast cycling). When your finger approaches, the added capacitance slows down the cycling and the count drops. The raw reading from `touch_pad_read()` reflects this count: lower values mean a touch is detected.
+So the number goes down when you touch the pad. Most people expect the opposite, and it sets the direction of every comparison in the code: a touch is a reading below the threshold.
 
 ### ESP-IDF Touch API
 
-The ESP-IDF v5.x touch driver API for the original ESP32 uses the `driver/touch_pad.h` header. (Note: ESP32-S2 and ESP32-S3 have a redesigned touch controller with a different API. The code in this lesson targets the original ESP32.)
+The touch driver for the original ESP32 is in `driver/touch_pad.h`. The ESP32-S2 and ESP32-S3 have a different touch controller with a different API, so this code is for the original ESP32 only.
 
 ```c
 #include "driver/touch_pad.h"
@@ -272,11 +263,11 @@ void touch_init(void)
 }
 ```
 
-The second argument to `touch_pad_config()` is a threshold value. We pass 0 here because we will calibrate the threshold at boot time rather than guessing a fixed number.
+The second argument of `touch_pad_config()` is a threshold. It is 0 here because the firmware measures its own threshold at boot.
 
 ### Calibration at Boot
 
-Touch readings vary depending on the physical pad geometry, wire length, humidity, and even the PCB layout. Hard-coding a threshold is fragile. A better approach is to read the baseline value at boot (when no one is touching the pad) and set the threshold as a percentage of that baseline:
+The untouched reading differs for every pad: it changes with the wire length, the pad shape and the humidity. A fixed threshold works on your desk and fails on the next unit. So the firmware reads the pad once at boot, untouched, as the baseline, and sets the threshold as a percentage of it:
 
 ```c
 #define TOUCH_THRESH_PERCENT  80   /* Touch triggers at 80% of baseline */
@@ -296,11 +287,13 @@ void touch_calibrate(void)
 }
 ```
 
-Call `touch_calibrate()` after `touch_init()` and a brief settling delay (about 200 ms is enough for the filter to stabilize). If the threshold value is too sensitive (phantom touches), lower the percentage to 70%. If it is not sensitive enough, raise it to 85%.
+With a baseline of 523, the threshold is 523 × 80 / 100 = 418 (the division drops the fraction). A reading below 418 counts as a touch.
+
+Call `touch_calibrate()` about 200 ms after `touch_init()`, once the filter has settled. If the lamp switches with no touch, the threshold is too close to the baseline: lower the percentage to 70. If a real touch is missed, raise it to 85. Do not touch the pad while the board starts, or the baseline includes your finger.
 
 ### Filtering and Debouncing
 
-The hardware filter (`touch_pad_filter_start()`) smooths out electrical noise. For reliable touch detection, you also need software debouncing. The simplest approach is to require the reading to stay below the threshold for several consecutive samples before declaring a touch, and to stay above the threshold for several consecutive samples before declaring a release:
+Electrical noise can push a reading below the threshold for a moment. The hardware filter (`touch_pad_filter_start()`) smooths the readings. Debouncing is the second defence: a touch counts only after several readings in a row below the threshold, and a release only after several above it. With 3 readings 20 ms apart, a touch is accepted after about 60 ms, which a person does not notice.
 
 ```c
 #define DEBOUNCE_COUNT  3
@@ -337,7 +330,9 @@ static bool is_touched(void)
 <InArticleAd />
 
 
-NVS is a key-value store built into ESP-IDF that persists data in flash across power cycles and firmware updates. It uses the NVS partition defined in the partition table (at offset 0x9000 by default). Unlike raw flash writes, NVS handles wear leveling, power-loss safety, and namespace isolation automatically.
+A variable in RAM is lost when power is removed, so a lamp that keeps its brightness only there starts dark after every power cut. NVS is the ESP-IDF store for small values that must remain: you save a value under a name (the key) and read it back by that name. It uses the `nvs` partition of the flash, at 0x9000 in the default partition table.
+
+Flash memory wears: each small area survives a limited number of erases, in the order of 100,000. NVS spreads its writes over the whole partition (wear leveling) and keeps the old value safe if power fails during a write. It still wears, so save a value when it changes for good, not many times a second.
 
 ### Core API
 
@@ -373,13 +368,13 @@ if (err == ESP_ERR_NVS_NOT_FOUND) {
 nvs_close(nvs);
 ```
 
-The `nvs_commit()` call is important. Without it, writes stay in a RAM buffer and may be lost if power is cut. For our lamp dimmer, we commit after each brightness change.
+Do not forget `nvs_commit()`. Without it the new value may not yet be in flash when power is cut.
 
-NVS supports several value types: `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `str` (strings), and `blob` (binary data). Each key name can be up to 15 characters.
+NVS stores integers from `u8` to `i64`, strings (`str`) and binary data (`blob`). A key name has at most 15 characters.
 
 ### Storing Brightness Across Power Cycles
 
-The lamp dimmer will save the current brightness to NVS whenever it changes. On boot, it reads the saved value and restores the LED to that level. If the key does not exist (first boot), it defaults to zero (off).
+The dimmer saves the brightness when you lift your finger: once per touch, not once per step of a fade. At boot it reads the saved value and sets the LED to it. On the first boot the key does not exist, so the lamp starts off.
 
 ## Circuit Connections
 
@@ -387,7 +382,7 @@ The lamp dimmer will save the current brightness to NVS whenever it changes. On 
 
 
 ```text
-   ESP32 DevKitC        Touch Lamp Circuit
+   ESP32 DevKitC
   ┌─────────────┐
   │        GP18 ├──[R1 100R]──┤>├── GND
   │             │              LED
@@ -399,25 +394,18 @@ The lamp dimmer will save the current brightness to NVS whenever it changes. On 
   └──────┤├─────┘
 ```
 
-Connect the components on a breadboard as follows:
+The LED's long leg (anode) goes through the 100 ohm resistor to GPIO18, and its short leg (cathode) goes to GND.
 
-| ESP32 Pin | Component | Notes |
-|-----------|-----------|-------|
-| GPIO 18 | LED anode through 100 ohm resistor | LEDC PWM output |
-| GND | LED cathode | Common ground |
-| GPIO 4 | Bare wire or copper tape (touch pad) | Touch0 input |
-| GND | Breadboard ground rail | Common ground |
+The touch pad is a bare wire of 5 to 10 cm, or a piece of copper tape, on GPIO4. It needs no resistor. Keep it away from the USB cable and other signal wires, which add noise to the reading.
 
-The touch pad is simply a bare wire (5 to 10 cm) or a piece of copper tape connected to GPIO4. No pull-up or pull-down resistor is needed; the touch controller handles biasing internally. Keep the wire away from other signals to reduce noise coupling.
-
-For the LED, a 100 ohm resistor limits current to about 13 mA at 3.3V (accounting for the LED forward voltage drop of about 2V). This is within the ESP32 GPIO safe operating range. If you are driving an LED strip through a MOSFET, connect the MOSFET gate to GPIO18 through a 100 ohm gate resistor and drive the strip from 5V or 12V.
+The resistor sets the LED current: the 3.3 V of the pin, minus the voltage the LED keeps, divided by 100 ohm. For an LED that keeps about 2 V (red, yellow) this is 1.3 V / 100 ohm = 13 mA, near the 12 mA recommended for continuous use of a pin. A white LED keeps about 3 V, so only about 3 mA flows and it is dim. To drive a white LED hard, or an LED strip, switch it with a MOSFET (a transistor used as a switch): gate to GPIO18 through 100 ohm, strip supplied from 5 V or 12 V.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-Here is the complete `main.c` for the capacitive touch lamp dimmer. The firmware initializes LEDC at 13-bit resolution, calibrates the touch sensor at boot, and runs a FreeRTOS task that distinguishes short touches (toggle on/off) from long presses (ramp brightness). Brightness is saved to NVS on every change.
+This is the complete `main.c`. One FreeRTOS task reads the pad every 20 ms and decides whether a touch was short or long.
 
 ```c
 #include <stdio.h>
@@ -732,19 +720,12 @@ void app_main(void)
 
 ### How the Code Works
 
-The firmware has four main layers that cooperate through shared state:
+The helper functions are the pieces you have already seen: NVS load and save, LEDC setup, touch setup and calibration. The new part is `touch_task`. Every 20 ms it debounces the reading, measures how long the pad has been held, and chooses one of two actions:
 
-1. **NVS layer:** `nvs_init_storage()` initializes the flash partition. `nvs_load_brightness()` and `nvs_save_brightness()` read and write a single `uint16` value under the "lamp" namespace. If the key does not exist on first boot, the default is zero.
+- A touch shorter than 400 ms switches the lamp. The hardware fade takes 300 ms. When the lamp switches on, it returns to the saved brightness.
+- A touch of 400 ms or longer changes the brightness by 64 duty steps every 30 ms while you hold. The full range of 8191 takes 128 steps, about 3.8 seconds. The direction reverses at the top and bottom of the range, and each time you release.
 
-2. **LEDC layer:** `ledc_pwm_init()` configures Timer 0 at 13-bit resolution and 5 kHz, binds Channel 0 to GPIO18, and installs the fade service. Two helper functions provide immediate duty updates and timed fade transitions.
-
-3. **Touch layer:** `touch_init_sensor()` sets up the touch pad hardware and starts the noise filter. `touch_calibrate()` reads the baseline after a settling period and computes the threshold at 80% of that value. `touch_is_active()` returns true when the filtered reading drops below the threshold.
-
-4. **Touch task:** The main control loop runs every 20 ms. It debounces the raw touch signal, tracks how long the pad has been held, and decides between two behaviors:
-   - **Short touch (under 400 ms):** Toggles the lamp on or off using the LEDC fade engine for a smooth transition. When turning on, it restores the last saved brightness.
-   - **Long press (400 ms or longer):** Ramps brightness up or down in steps. The ramp direction reverses each time you release and touch again, and it also reverses when hitting the top or bottom of the range.
-
-On every release, the current brightness is saved to NVS so it persists across power cycles.
+On every release with the lamp on, the brightness is saved to NVS.
 
 ## CMakeLists.txt Files
 
@@ -813,31 +794,31 @@ idf_component_register(SRCS "main.c"
 
 ### Adjusting Touch Sensitivity
 
-If you get phantom touches (the LED flickers without contact), try these fixes in order:
+If the lamp switches with no touch, try these in order:
 
 1. Lower `TOUCH_THRESH_PERCENT` from 80 to 70 or 65.
 2. Increase `DEBOUNCE_COUNT` from 3 to 5.
 3. Shorten the touch wire. Long wires pick up more noise.
 4. Keep the wire away from the USB cable and power lines.
 
-If the sensor does not respond to touch at all, check that the wire is connected to GPIO4 (not another pin), and verify in the serial output that the baseline reading is reasonable (typically 400 to 700 for a short wire). A baseline near zero indicates a wiring problem.
+If the sensor does not respond at all, check that the wire is on GPIO4, and read the baseline in the serial output. For a short wire it is usually 400 to 700. A baseline near zero means a wiring fault.
 
 ## Pulse Counter and RMT Overview
 
 <InArticleAd />
 
 
-The GPIO matrix routes signals not only to common peripherals like LEDC and UART, but also to two specialized peripherals worth knowing about: the Pulse Counter (PCNT) and the Remote Control Transceiver (RMT).
+Two more peripherals count and time fast pulses in hardware, which software does badly. The dimmer does not use them, but you will meet them.
 
 ### Pulse Counter (PCNT)
 
-The PCNT peripheral counts edges on a signal pin and optionally uses a second pin as a direction control. It is designed for:
+Some sensors send their value as pulses: a flow meter gives one pulse per amount of water, a rotary encoder gives pulses as a shaft turns. Software that counts them misses pulses whenever it is busy; PCNT counts the edges in hardware. A second pin can set the direction of counting. Its uses:
 
-- **Rotary encoders:** The two quadrature signals feed into the signal and control inputs. The counter increments on one rotation direction and decrements on the other, with no CPU involvement.
-- **Frequency measurement:** Count rising edges over a known time window to compute frequency.
-- **Event counting:** Count button presses, sensor pulses, or external clock edges.
+- Rotary encoders. The two signals of the encoder go to the two inputs, and the counter goes up for one direction of rotation and down for the other.
+- Frequency measurement. Count the rising edges in a known time.
+- Event counting, such as pulses from a flow meter.
 
-The ESP32 has 8 PCNT units, each with a 16-bit signed counter and configurable high/low limit watchpoints that trigger interrupts. In ESP-IDF v5.x, the PCNT driver uses the `driver/pulse_cnt.h` API with a handle-based design:
+The ESP32 has 8 PCNT units. Each has a signed 16-bit counter and limits that raise an interrupt when the count reaches them. The driver is `driver/pulse_cnt.h`:
 
 ```c
 #include "driver/pulse_cnt.h"
@@ -859,17 +840,17 @@ pcnt_channel_handle_t pcnt_chan = NULL;
 pcnt_new_channel(pcnt_unit, &chan_config, &pcnt_chan);
 ```
 
-You configure edge and level actions (count up, count down, hold) to define how the counter responds to each combination of signal edge and direction level.
+You then choose what each edge does (count up, count down or nothing) for each level of the direction pin.
 
 ### RMT (Remote Control Transceiver)
 
-The RMT peripheral was originally designed for infrared remote control protocols, but its ability to transmit and receive precisely timed pulse sequences makes it useful for several other applications:
+RMT sends and receives trains of pulses whose lengths are exact. It was made for infrared remote controls, and it serves any protocol that carries its data in pulse lengths:
 
-- **WS2812 / NeoPixel LEDs:** The RMT transmitter generates the exact 800 kHz timing that addressable LEDs require, without bit-banging or DMA tricks.
-- **IR transmit and receive:** Encode NEC, RC5, or custom IR protocols. The hardware captures pulse widths for decoding.
-- **DHT sensors:** The RMT receiver can capture the timing-sensitive one-wire protocol used by DHT11/DHT22 temperature sensors.
+- WS2812 (NeoPixel) addressable LEDs, which need exact timing at 800 kHz.
+- Infrared remote control, sending and receiving (NEC, RC5 and others).
+- DHT11 and DHT22 temperature sensors, whose bits differ only in the length of a pulse.
 
-The ESP32 has 8 RMT channels (4 TX, 4 RX). In ESP-IDF v5.x, the RMT driver uses `driver/rmt_tx.h` and `driver/rmt_rx.h` with an encoder abstraction that converts your data into RMT symbols (pulse pairs with configurable duration and level):
+The ESP32 has 8 RMT channels, and each can transmit or receive. The drivers are `driver/rmt_tx.h` and `driver/rmt_rx.h`. An encoder turns your data into RMT symbols, which are pairs of pulses with a set length and level:
 
 ```c
 #include "driver/rmt_tx.h"
@@ -885,27 +866,31 @@ rmt_channel_handle_t tx_chan = NULL;
 rmt_new_tx_channel(&tx_config, &tx_chan);
 ```
 
-Both PCNT and RMT will appear in later projects. The key takeaway for now is that the ESP32 offloads timing-critical tasks to dedicated hardware, freeing the CPU for application logic.
+The rule behind LEDC, PCNT and RMT is the same: when timing must be exact, let hardware do it, and let your code decide what should happen.
 
 ## Exercises
 
 <InArticleAd />
 
 
-1. **Add a second touch pad for mode selection.** Wire a second bare wire to GPIO27 (Touch7). Modify the firmware so that Touch0 still controls brightness, but a short touch on Touch7 cycles through three modes: solid on, slow pulse (brightness ramps up and down in a loop), and off. You will need a second set of debounce variables and a mode state machine.
+1. **Add a second touch pad for mode selection.** Wire a second bare wire to GPIO27 (Touch7). Touch0 still controls brightness; a short touch on Touch7 cycles through three modes: solid on, slow pulse (brightness ramps up and down in a loop) and off. You need a second set of debounce variables and a mode state machine.
 
-2. **Implement exponential dimming.** Human brightness perception is logarithmic, so linear PWM steps look uneven (the low end changes too fast, the high end looks flat). Replace the linear ramp with a gamma-corrected curve. Create a lookup table of 256 entries where `table[i] = (int)(pow(i / 255.0, 2.8) * 8191)`, and use it to map a linear 0 to 255 brightness value to a 13-bit duty cycle. Compare the visual smoothness with the original linear ramp.
+2. **Implement exponential dimming.** The eye sees brightness on a logarithmic scale, so linear PWM steps look uneven (the low end changes too fast, the high end looks flat). Replace the linear ramp with a gamma-corrected curve: a lookup table of 256 entries, `table[i] = (int)(pow(i / 255.0, 2.8) * 8191)`, that maps a linear 0 to 255 brightness to a 13-bit duty. Compare the smoothness with the linear ramp.
 
-3. **Log touch events with timestamps.** Add an `esp_timer_get_time()` call in the touch task and print a log line every time a touch or release is detected, including the raw filtered reading, the threshold, and the elapsed time since boot in milliseconds. Use this to measure the actual debounce latency and verify it matches your `DEBOUNCE_COUNT * TOUCH_POLL_MS` expectation.
+3. **Log touch events with timestamps.** In the touch task, call `esp_timer_get_time()` and log each touch and release with the raw filtered reading, the threshold and the milliseconds since boot. Measure the real debounce delay and check it against `DEBOUNCE_COUNT * TOUCH_POLL_MS`.
 
-4. **Store and recall multiple brightness presets.** Extend the NVS storage to save three preset brightness levels under keys "preset0", "preset1", "preset2". A triple-tap (three short touches within 1 second) saves the current brightness to the next preset slot. A double-tap recalls the next stored preset. Display the active preset number in the serial log.
+4. **Store and recall multiple brightness presets.** Save three preset brightness levels in NVS under the keys "preset0", "preset1", "preset2". A triple-tap (three short touches within 1 second) saves the current brightness to the next preset slot; a double-tap recalls the next stored preset. Log the active preset number.
 
 ## Summary
 
 <InArticleAd />
 
 
-You explored the ESP32 GPIO matrix and how it routes peripheral signals to arbitrary pins. You configured LEDC PWM at 13-bit resolution with hardware fade support, set up the built-in capacitive touch sensor with boot-time calibration and debouncing, and used NVS to persist brightness across power cycles. The complete firmware distinguishes short touches (toggle) from long presses (ramp) and saves state to flash. You also saw how the Pulse Counter and RMT peripherals handle specialized timing tasks in hardware, freeing the CPU for application logic.
+- The GPIO matrix connects almost any peripheral signal to almost any pin. Strapping pins, input-only pins and the flash pins are the exceptions.
+- LEDC resolution and frequency share one clock: a higher frequency leaves fewer steps.
+- A touch makes the reading fall. Measure the baseline at boot, set the threshold as a percentage of it, and debounce.
+- NVS keeps small values through a power cut. Commit each write, and do not write many times a second.
+- PCNT counts pulses and RMT times them, both in hardware.
 
 <EmbeddedProgrammingEsp32Comments />
 

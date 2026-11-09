@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Wi-Fi is powerful but requires infrastructure. Bluetooth Low Energy works anywhere, consumes far less power, and lets phones connect directly to your device without any network setup. In this lesson you will build a BLE environmental beacon that advertises temperature and humidity data from a DHT22 sensor. Open any BLE scanner app on your phone and the readings appear instantly. You will also implement GATT notifications so connected clients receive updates automatically, and learn how BLE and Wi-Fi share the ESP32's single radio without stepping on each other. #ESP32 #BLE #Bluetooth
+A sensor in a cold room, on a motor or in a field often has no Wi-Fi router in reach, and a Wi-Fi radio would empty its battery in days. Bluetooth Low Energy (BLE) needs no router and no password: a phone standing nearby reads the device directly, and the radio is off most of the time. In this lesson you build a BLE sensor that offers the temperature and humidity from a DHT22 to any phone. You also make it send each new reading by itself (a notification), and you see how BLE and Wi-Fi take turns on the one radio of the ESP32. #ESP32 #BLE #Bluetooth
 
 ## What We Are Building
 
 <Card title="BLE Environmental Beacon" icon="star">
-A wireless environmental sensor that broadcasts data over Bluetooth Low Energy. The ESP32 reads the DHT22 sensor and exposes temperature, humidity, and battery level through standard BLE Environmental Sensing Service (ESS) characteristics. Any BLE scanner app (nRF Connect, LightBlue) can discover and read the values. Connected clients receive automatic notifications when readings change. The beacon also supports Wi-Fi coexistence for dual-mode applications.
+A wireless sensor that a phone can find and read over Bluetooth Low Energy. The ESP32 reads the DHT22 and offers temperature and humidity in the standard layout for such data, the Environmental Sensing Service (ESS). Any BLE scanner app (nRF Connect, LightBlue) can find the device and read the values. A connected phone that asks for notifications receives every new reading without asking again. The lesson ends with BLE and Wi-Fi running together.
 </Card>
 
 **Project specifications:**
@@ -38,12 +38,12 @@ A wireless environmental sensor that broadcasts data over Bluetooth Low Energy. 
 | Parameter | Value |
 |-----------|-------|
 | MCU | ESP32 DevKitC |
-| Sensor | DHT22 (reused from Lesson 4) |
+| Sensor | DHT22 (the one from the HTTP server lesson) |
 | BLE Role | Peripheral (GATT server) |
 | Service | Environmental Sensing Service (UUID 0x181A) |
 | Characteristics | Temperature (0x2A6E), Humidity (0x2A6F) |
-| Advertising Interval | 100 ms (fast) / 1000 ms (slow, after 30s) |
-| Notification Interval | Every 5 seconds on value change |
+| Advertising Interval | 100 ms to 150 ms |
+| Notification Interval | Every 5 seconds (each new sensor reading) |
 | Connection Parameters | Min 7.5 ms, Max 30 ms, Latency 0 |
 | Coexistence | BLE + Wi-Fi simultaneous operation demonstrated |
 | Phone App | nRF Connect, LightBlue, or any GATT browser |
@@ -52,8 +52,8 @@ A wireless environmental sensor that broadcasts data over Bluetooth Low Energy. 
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from previous lessons |
-| S1 | DHT22 temperature/humidity sensor | 1 | Reused from Lesson 4 |
+| U1 | ESP32 DevKitC | 1 | The board you have used so far |
+| S1 | DHT22 temperature/humidity sensor | 1 | From the HTTP server lesson |
 | R1 | 4.7k ohm resistor | 1 | DHT22 data line pull-up |
 | | Breadboard + jumper wires | 1 set | |
 | | Smartphone with BLE scanner app | 1 | nRF Connect recommended |
@@ -63,9 +63,9 @@ A wireless environmental sensor that broadcasts data over Bluetooth Low Energy. 
 <InArticleAd />
 
 
-Bluetooth Low Energy (BLE) is a wireless protocol designed for short bursts of data at minimal power. Unlike Classic Bluetooth, which maintains a continuous connection for streaming audio or transferring files, BLE wakes up only when it has something to send, transmits a small packet, and goes back to sleep. This makes it ideal for IoT sensors, wearables, and beacons where battery life matters more than throughput.
+Bluetooth Low Energy (BLE) is a radio protocol for small amounts of data at very low power. Classic Bluetooth keeps the radio busy all the time, which suits audio and file transfer. BLE switches the radio on only to send one small packet, then off again. A sensor with a few bytes every few seconds has its radio off most of the time, which is why it can run for months on a small battery.
 
-The key differences from Classic Bluetooth:
+The differences from Classic Bluetooth:
 
 | Feature | Classic Bluetooth | BLE |
 |---------|-------------------|-----|
@@ -76,81 +76,76 @@ The key differences from Classic Bluetooth:
 | Topology | Point to point | Point to point, broadcast, mesh |
 | Use case | Audio, file transfer | Sensors, beacons, control |
 
-BLE is organized into two major layers: GAP and GATT.
+Your firmware meets BLE through two parts. GAP answers "how does a phone find this device and connect to it?"; GATT answers "once connected, what data is there and how is it read?". Think of a shop: GAP is the sign over the door, GATT the counter inside, where each item has its place. The library handles the layers below, which carry the packets.
 
 ```text
- BLE Protocol Stack
- ┌────────────────────────────────┐
- │  Application (Your firmware)  │
- ├────────────────────────────────┤
- │  GAP         │  GATT          │
- │  (Discovery, │  (Services,    │
- │   Advertise) │   Read/Write)  │
- ├──────────────┴────────────────┤
- │   ATT (Attribute Protocol)    │
- ├────────────────────────────────┤
- │   L2CAP (Logical Link)        │
- ├────────────────────────────────┤
- │   Link Layer (LL)             │
- │   40 channels, 2 MHz spacing  │
- ├────────────────────────────────┤
- │   Physical Layer (PHY)        │
- │   2.4 GHz ISM, 1 Mbps        │
- └────────────────────────────────┘
+ ┌───────────────────────────────┐
+ │  Application (your firmware)  │
+ ├───────────────┬───────────────┤
+ │  GAP          │  GATT         │
+ │  be found,    │  hold data,   │
+ │  connect      │  read, notify │
+ ├───────────────┴───────────────┤
+ │  ATT and L2CAP: carry the     │
+ │  GATT data in small packets   │
+ ├───────────────────────────────┤
+ │  Link layer: 40 channels      │
+ ├───────────────────────────────┤
+ │  Radio: 2.4 GHz, 1 Mbit/s     │
+ └───────────────────────────────┘
 ```
 
 ### GAP: The Advertising and Connection Layer
 
-The Generic Access Profile (GAP) handles device discovery and connection establishment. A BLE device operates in one of several roles:
+The Generic Access Profile (GAP) covers how devices find each other and connect. A BLE device takes one of four roles:
 
-1. **Broadcaster**: sends advertising packets without accepting connections (beacon mode).
-2. **Observer**: listens for advertising packets without connecting.
-3. **Peripheral**: advertises and accepts connections. This is our ESP32's role.
-4. **Central**: scans for peripherals and initiates connections. This is your phone's role.
+1. **Broadcaster**: sends advertising packets and accepts no connection (a beacon).
+2. **Observer**: listens for advertising packets and never connects.
+3. **Peripheral**: advertises and accepts a connection. This is the role of our ESP32.
+4. **Central**: scans for peripherals and starts the connection. This is the role of your phone.
 
-The advertising process works like this: the peripheral sends a short packet (up to 31 bytes) on three dedicated advertising channels (37, 38, 39) at a configurable interval. A scanning central device picks up these packets and can either read the embedded data directly (passive scanning) or request a scan response for more information (active scanning). If the central wants structured data exchange, it initiates a connection.
+Advertising is the sign over the door. It works in three steps:
+
+1. The peripheral sends a short packet, at most 31 bytes, on three channels kept for advertising (37, 38 and 39). It repeats the packet at an interval that you choose.
+2. A scanning central receives the packet. It can read the data in it (passive scanning), or ask once for a second packet with more data, the scan response (active scanning).
+3. If the central wants more than these few bytes, it starts a connection.
 
 ### GATT: The Data Layer
 
-Once connected, data exchange follows the Generic Attribute Profile (GATT). GATT defines a hierarchy:
+After the connection, the Generic Attribute Profile (GATT) says how the data is arranged, so that no phone app needs special code for each device. GATT has four levels:
 
-1. **Profile**: a collection of services for a use case (not a protocol element, just a design pattern).
-2. **Service**: a group of related data points, identified by a UUID. For example, the Environmental Sensing Service is UUID `0x181A`.
-3. **Characteristic**: a single data point within a service. Temperature is `0x2A6E`, Humidity is `0x2A6F`.
-4. **Descriptor**: metadata about a characteristic. The most important one is the Client Characteristic Configuration Descriptor (CCCD, UUID `0x2902`), which controls notifications.
+1. **Profile**: a set of services for one use. It is a design pattern, not something sent over the radio.
+2. **Service**: a group of related values. Each service has a UUID, a number that identifies it everywhere. The Environmental Sensing Service is UUID `0x181A`.
+3. **Characteristic**: one value in a service. Temperature is `0x2A6E` and Humidity is `0x2A6F`.
+4. **Descriptor**: a setting that belongs to one characteristic. The one you will use is the Client Characteristic Configuration Descriptor (CCCD, UUID `0x2902`), the switch a client writes to when it wants notifications.
 
 ```text
- BLE GATT Hierarchy
- ┌─────────────────────────────────────────┐
- │  Profile (Environmental Sensing)        │
- │  ┌───────────────────────────────────┐  │
- │  │  Service: ESS (UUID 0x181A)      │  │
- │  │  ┌─────────────────────────────┐  │  │
- │  │  │ Characteristic: Temperature │  │  │
- │  │  │   UUID: 0x2A6E              │  │  │
- │  │  │   Properties: Read, Notify  │  │  │
- │  │  │   ┌───────────────────────┐ │  │  │
- │  │  │   │ CCCD (0x2902)        │ │  │  │
- │  │  │   │ Enable notifications │ │  │  │
- │  │  │   └───────────────────────┘ │  │  │
- │  │  └─────────────────────────────┘  │  │
- │  │  ┌─────────────────────────────┐  │  │
- │  │  │ Characteristic: Humidity    │  │  │
- │  │  │   UUID: 0x2A6F              │  │  │
- │  │  │   Properties: Read, Notify  │  │  │
- │  │  └─────────────────────────────┘  │  │
- │  └───────────────────────────────────┘  │
- └─────────────────────────────────────────┘
+ ┌─────────────────────────────────────┐
+ │ Service: Environmental Sensing      │
+ │ UUID 0x181A                         │
+ │ ┌─────────────────────────────────┐ │
+ │ │ Characteristic: Temperature     │ │
+ │ │ UUID 0x2A6E, read and notify    │ │
+ │ │ ┌─────────────────────────────┐ │ │
+ │ │ │ Descriptor: CCCD (0x2902)   │ │ │
+ │ │ │ switches notifications on   │ │ │
+ │ │ └─────────────────────────────┘ │ │
+ │ └─────────────────────────────────┘ │
+ │ ┌─────────────────────────────────┐ │
+ │ │ Characteristic: Humidity        │ │
+ │ │ UUID 0x2A6F, read and notify    │ │
+ │ └─────────────────────────────────┘ │
+ └─────────────────────────────────────┘
 ```
 
-Each characteristic has properties that define how it can be accessed: read, write, notify, or indicate. Our temperature and humidity characteristics will support read (client polls the value) and notify (server pushes updates automatically).
+The device that holds the data is the GATT server (our ESP32); the one that asks is the client (the phone). Each characteristic has properties that say how a client may use it: read, write, notify or indicate. Ours allow read (the client asks once) and notify (the server sends each new value by itself). The Humidity characteristic has its own CCCD too; the drawing shows one to save space.
 
 ## NimBLE Stack on ESP-IDF
 
 <InArticleAd />
 
 
-ESP-IDF provides two BLE stacks: Bluedroid (the Android BLE/Classic stack) and NimBLE (a lightweight BLE-only stack from Apache Mynewt). Starting with ESP-IDF v5.x, NimBLE is the recommended choice for BLE-only projects because it uses roughly 50% less flash and 40% less RAM than Bluedroid.
+A stack is the library that implements all the layers of a protocol. ESP-IDF offers two for Bluetooth: Bluedroid (from Android, for BLE and Classic) and NimBLE (BLE only, from Apache Mynewt). For a project that needs only BLE, use NimBLE: it takes roughly 50% less flash and 40% less RAM than Bluedroid.
 
 ### Enabling NimBLE in Your Project
 
@@ -167,7 +162,7 @@ idf.py menuconfig
 4. Save and exit
 </Steps>
 
-Your project's `CMakeLists.txt` needs the BLE components. The main `CMakeLists.txt` remains standard:
+The top-level `CMakeLists.txt` is the usual one:
 
 ```cmake
 cmake_minimum_required(VERSION 3.16)
@@ -181,33 +176,35 @@ And in `main/CMakeLists.txt`, list the required components:
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES bt nvs_flash driver
+    REQUIRES bt nvs_flash driver esp_timer
 )
 ```
 
-The `bt` component pulls in NimBLE automatically when you have selected it in menuconfig. The `driver` component is needed for the DHT22 GPIO access.
+The `bt` component brings in NimBLE once you have selected it in menuconfig. The DHT22 code needs `driver` for the GPIO and `esp_timer` for timing in microseconds.
 
 ### NimBLE Programming Model
 
-NimBLE uses a callback-driven architecture similar to the Wi-Fi event model you learned in Lesson 4. The key concepts are:
+NimBLE works like the Wi-Fi event loop: you do not wait for the radio. You give NimBLE functions of your own (callbacks), and it calls them when something happens. There are four parts:
 
-1. **Host task**: NimBLE runs its own FreeRTOS task (`nimble_port_freertos_init`). All BLE operations happen in this task's context.
-2. **GAP event callback**: handles advertising, connection, and disconnection events.
-3. **GATT access callback**: handles read and write requests for each characteristic.
-4. **Sync callback**: called when the BLE host and controller have synchronized. This is where you start advertising.
+1. **Host task**: NimBLE runs in its own FreeRTOS task, started by `nimble_port_freertos_init`. Your callbacks run inside this task.
+2. **GAP event callback**: called when a phone connects, disconnects or subscribes.
+3. **GATT access callback**: called when a client reads or writes a characteristic.
+4. **Sync callback**: called once, when the NimBLE host and the radio controller are ready. This is where you start advertising, because advertising started earlier fails.
 
 ## GAP: Advertising Configuration
 
 <InArticleAd />
 
 
-Advertising is how your ESP32 announces its presence to the world. The advertising data packet is limited to 31 bytes, so you must be selective about what to include. Typically you include:
+Advertising tells nearby phones that the ESP32 exists. The packet holds only 31 bytes, and every field costs 2 bytes (length and type) before its data, so choose with care. This project sends three fields:
 
-1. **Flags**: indicate BLE support and discoverability mode (3 bytes).
-2. **Complete Local Name**: the device name scanners will display.
-3. **Service UUIDs**: tells scanners what services are available.
+1. **Flags**: say that the device can be found and that it is BLE only (2 + 1 = 3 bytes).
+2. **Complete Local Name**: the name a scanner shows. `ESP32-ENV` has 9 characters, so 2 + 9 = 11 bytes.
+3. **Service UUIDs**: tell a scanner which services the device has. One 16-bit UUID takes 2 + 2 = 4 bytes.
 
-Here is how to configure advertising with NimBLE:
+That is 18 of the 31 bytes. A longer name can fill the packet, and then the call that sets the fields returns an error.
+
+The code below sets these fields and starts advertising:
 
 ```c
 #include "host/ble_hs.h"
@@ -260,7 +257,7 @@ static void start_advertising(void)
 }
 ```
 
-The advertising interval controls how often the ESP32 sends packets. A shorter interval (100 ms) means faster discovery but higher power consumption. For a battery-powered beacon you might increase this to 1000 ms after the initial discovery window. For our mains-powered development setup, 100 ms is fine.
+The advertising interval sets how often the packet is sent. A short interval (100 ms) lets a phone find the device quickly but uses more power; on a battery you might use 1000 ms. Our board runs from USB, so 100 ms costs nothing.
 
 ### Connection Mode and Discoverability
 
@@ -272,23 +269,23 @@ The `conn_mode` field determines whether a central can connect:
 | Undirected connectable | `BLE_GAP_CONN_MODE_UND` | Any central can connect |
 | Directed connectable | `BLE_GAP_CONN_MODE_DIR` | Only a specific central can connect |
 
-For our environmental sensor, we use undirected connectable so any phone can connect and read data.
+Our sensor uses undirected connectable, so that any phone can connect.
 
 ## GATT Server: Services and Characteristics
 
 <InArticleAd />
 
 
-The GATT server defines the data your device exposes. NimBLE uses a table-driven approach: you define your services and characteristics in a static array, and NimBLE handles all the protocol details.
+The GATT server holds the data that the device offers. In NimBLE you describe it as a table: you list your services and characteristics in a static array, and NimBLE handles the protocol.
 
 ### UUID Types
 
-BLE uses two UUID formats:
+BLE uses two forms of UUID:
 
-1. **16-bit UUIDs**: assigned by the Bluetooth SIG for standard services and characteristics. Environmental Sensing Service is `0x181A`, Temperature is `0x2A6E`.
-2. **128-bit UUIDs**: custom UUIDs for vendor-specific services. Format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+1. **16-bit UUIDs**: given out by the Bluetooth SIG, the body that owns the standard, for standard services and characteristics. Environmental Sensing Service is `0x181A` and Temperature is `0x2A6E`.
+2. **128-bit UUIDs**: numbers you make yourself for data that has no standard. Format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
 
-For our project we use standard 16-bit UUIDs because we are implementing the official Environmental Sensing Service. This means any BLE client that understands ESS will automatically know how to interpret our data.
+Temperature and humidity have a standard, so we use the 16-bit UUIDs. A client that knows the Environmental Sensing Service then knows the meaning and the format of our data with no code written for our device.
 
 ### Defining the GATT Table
 
@@ -338,26 +335,26 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
 };
 ```
 
-The `val_handle` pointers are filled in by NimBLE during service registration. You use these handles later to send notifications. The `flags` field sets the characteristic properties: our characteristics support both read (polling) and notify (push).
+A handle is the number NimBLE gives to each entry of the table when it registers the service. NimBLE writes these numbers into the `val_handle` variables, and you use them later to say which value a notification carries. The `flags` field sets the properties: read and notify.
 
 ## Characteristic Values and BLE Data Formats
 
 <InArticleAd />
 
 
-The Bluetooth SIG defines standard data formats for each characteristic. Following these formats ensures interoperability with any compliant BLE client.
+A standard characteristic has a fixed format. BLE sends whole numbers, not fractions, so each standard value is a count of small steps. Send any other format and a phone app shows a wrong value.
 
 ### Temperature (0x2A6E)
 
-The Temperature characteristic uses a signed 16-bit integer (`int16_t`) representing degrees Celsius with a resolution of 0.01. So a reading of 23.45 C is encoded as `2345`.
+The Temperature characteristic is a signed 16-bit integer (`int16_t`) that counts steps of 0.01 degrees Celsius. A reading of 23.45 C is sent as `2345`, and -5.30 C as `-530`.
 
 ### Humidity (0x2A6F)
 
-The Humidity characteristic uses an unsigned 16-bit integer (`uint16_t`) representing percent relative humidity with a resolution of 0.01. So a reading of 55.20% is encoded as `5520`.
+The Humidity characteristic is an unsigned 16-bit integer (`uint16_t`) that counts steps of 0.01 percent relative humidity. A reading of 55.20% is sent as `5520`.
 
 ### The GATT Access Callback
 
-When a client reads a characteristic, NimBLE calls the access callback. The callback must append the value to a memory buffer (`os_mbuf`):
+When a client reads a characteristic, NimBLE calls the access callback. The callback adds the value to the reply, which NimBLE keeps in a buffer of type `os_mbuf`:
 
 ```c
 /* Current sensor values (updated by the sensor task) */
@@ -394,11 +391,11 @@ static int gatt_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 }
 ```
 
-Note that BLE uses little-endian byte order, which matches the ESP32's native byte order. No byte swapping is needed.
+BLE sends the low byte of a number first (little-endian order): `2345` is `0x0929`, and it travels as the bytes `29 09`. The ESP32 stores numbers the same way, so the code copies the variable as it is.
 
 ### Converting DHT22 Readings to BLE Format
 
-The DHT22 sensor returns temperature as a float in degrees Celsius and humidity as a float in percent. Converting to BLE format is straightforward:
+The DHT22 driver returns temperature as a float in degrees Celsius and humidity as a float in percent. Multiply each by 100 to get the BLE value:
 
 ```c
 static void convert_sensor_to_ble(float temp_c, float humi_pct)
@@ -411,30 +408,30 @@ static void convert_sensor_to_ble(float temp_c, float humi_pct)
 }
 ```
 
-For example, if the DHT22 reads 24.3 C and 61.8%, the BLE values become `2430` and `6180`.
+A reading of 24.3 C and 61.8% gives `2430` and `6180`.
 
 ## Notifications
 
 <InArticleAd />
 
 
-Notifications allow the server to push updated values to a connected client without the client polling. This is more power-efficient than repeated reads and provides real-time updates.
+A read gives the client one value, once. To follow a changing reading it would have to read again and again (polling), like calling a shop every minute to ask whether your order is ready. A notification is leaving your number: the client asks once, and the server then sends each new value by itself. The radio is used only when there is something new, which saves power on both sides.
 
 ### How Notifications Work
 
-Notifications are controlled by the Client Characteristic Configuration Descriptor (CCCD), a special descriptor with UUID `0x2902` that NimBLE adds automatically to any characteristic with the `NOTIFY` flag. The CCCD is a 16-bit value where:
+The switch is the Client Characteristic Configuration Descriptor (CCCD), UUID `0x2902`. NimBLE adds one to every characteristic that has the `NOTIFY` flag. The CCCD is a 16-bit value:
 
-- Bit 0 = 1: notifications enabled
-- Bit 1 = 1: indications enabled (like notifications but with acknowledgment)
+- Bit 0 = 1: notifications are on
+- Bit 1 = 1: indications are on (the same as notifications, but the client confirms each one)
 
-The client writes to the CCCD to subscribe. NimBLE handles CCCD writes internally and generates a `BLE_GAP_EVENT_SUBSCRIBE` event in your GAP callback.
+The client subscribes by writing to the CCCD. NimBLE handles the write and then reports it to your GAP callback as a `BLE_GAP_EVENT_SUBSCRIBE` event. A subscription lasts only as long as the connection. After a disconnect the client must subscribe again.
 
 ### Tracking Subscriptions
 
-You need to track which connection handles have subscribed to notifications:
+The firmware must remember whether the connected client has subscribed, and to which value:
 
 ```c
-static uint16_t conn_handle_active = 0;
+static uint16_t conn_handle_active = BLE_HS_CONN_HANDLE_NONE;  /* 0 is a valid handle */
 static bool temp_notify_enabled = false;
 static bool humi_notify_enabled = false;
 
@@ -454,7 +451,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Disconnected, reason=%d",
                  event->disconnect.reason);
-        conn_handle_active = 0;
+        conn_handle_active = BLE_HS_CONN_HANDLE_NONE;
         temp_notify_enabled = false;
         humi_notify_enabled = false;
         start_advertising();  /* Resume advertising */
@@ -501,7 +498,7 @@ To push a value update, use `ble_gatts_notify_custom()`. This builds a notificat
 ```c
 static void send_notification(uint16_t attr_handle, void *data, uint16_t len)
 {
-    if (conn_handle_active == 0) {
+    if (conn_handle_active == BLE_HS_CONN_HANDLE_NONE) {
         return;  /* No connection */
     }
 
@@ -537,19 +534,17 @@ if (humi_notify_enabled) {
 <InArticleAd />
 
 
-When a central connects to your peripheral, BLE negotiates connection parameters that affect latency, throughput, and power consumption.
+Two connected devices do not keep their radios on: they meet on the radio at fixed moments and sleep between them. Three numbers, the connection parameters, set this timetable, and so how fast data moves and how much power the link uses.
 
 ### Connection Parameters
 
-The three key parameters are:
-
 | Parameter | Description | Our Value |
 |-----------|-------------|-----------|
-| Connection Interval | How often the central and peripheral exchange data | 7.5 ms min, 30 ms max |
-| Slave Latency | How many intervals the peripheral can skip if it has nothing to send | 0 (respond every interval) |
-| Supervision Timeout | How long before a missed response is treated as a disconnect | 4000 ms |
+| Connection Interval | The time between two meetings of central and peripheral | 7.5 ms min, 30 ms max |
+| Slave Latency (peripheral latency in newer documents) | How many meetings the peripheral may miss when it has nothing to send | 0 (attend every meeting) |
+| Supervision Timeout | How long with no answer before the link counts as lost | 4000 ms |
 
-After a connection is established, either side can request a parameter update. The peripheral typically requests parameters that match its use case:
+The central decides, but the peripheral may ask for the values that suit it. The code writes them in the units of the standard: 1.25 ms for the interval and 10 ms for the timeout.
 
 ```c
 case BLE_GAP_EVENT_CONNECT:
@@ -558,7 +553,7 @@ case BLE_GAP_EVENT_CONNECT:
 
         /* Request connection parameter update */
         struct ble_gap_upd_params params = {
-            .itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN,  /* 7.5 ms */
+            .itvl_min = 6,    /* 7.5 ms (units of 1.25 ms) */
             .itvl_max = 24,   /* 30 ms (units of 1.25 ms) */
             .latency  = 0,
             .supervision_timeout = 400,  /* 4000 ms (units of 10 ms) */
@@ -572,36 +567,30 @@ case BLE_GAP_EVENT_CONNECT:
 
 ### Bonding Basics
 
-Bonding stores pairing information so that reconnections skip the pairing process. For our environmental sensor, bonding is not strictly necessary (the data is not sensitive), but NimBLE supports it through the Security Manager. Enabling bonding requires:
-
-1. Configuring the security manager with `ble_hs_cfg.sm_bonding = 1`.
-2. Setting I/O capabilities (for a headless device: `BLE_SM_IO_CAP_NO_IO`).
-3. Storing bond keys in NVS using NimBLE's built-in store.
-
-We will keep our project simple and skip bonding, but you should know it exists for projects that handle sensitive data.
+Pairing is the step in which two devices agree on keys to encrypt the link; bonding stores the keys, so the next connection does not pair again. Our sensor does not use it: any phone in range can connect and read the values, acceptable for room temperature and not for private data. NimBLE supports bonding through its Security Manager (`ble_hs_cfg.sm_bonding = 1`) and stores the keys in NVS, the small key-value store in flash.
 
 ## BLE and Wi-Fi Coexistence
 
 <InArticleAd />
 
 
-The ESP32 has a single 2.4 GHz radio shared between Wi-Fi and Bluetooth. It cannot transmit on both simultaneously; instead, it uses a time-division multiplexing scheme called coexistence (coex). The hardware arbiter grants radio access to whichever protocol has the highest priority at any given moment.
+The ESP32 has one 2.4 GHz radio, shared by Wi-Fi and Bluetooth. It cannot serve both at the same moment, so the two take turns many times a second: coexistence (coex). A part of the chip, the arbiter, gives the radio to whichever need is more urgent at that moment. The cost: each protocol is a little slower and less regular than alone.
 
 ### How Coexistence Works
 
-When both BLE and Wi-Fi are active, the coex arbiter follows these rules:
+When BLE and Wi-Fi are both active, the arbiter follows these rules:
 
-1. Wi-Fi beacons and BLE advertising events have high priority because missing them causes connection drops.
-2. Wi-Fi data transfer gets priority during active TCP sessions.
-3. BLE connection events are scheduled in the gaps between Wi-Fi transmissions.
-4. If a conflict occurs, the lower-priority operation is delayed or skipped.
+1. Wi-Fi beacons and BLE advertising come first, because a link that misses them is lost.
+2. Wi-Fi data comes first while a TCP transfer is running.
+3. The BLE connection meetings are placed in the gaps between Wi-Fi transmissions.
+4. When two needs collide, the less urgent one is delayed or skipped.
 
 ### Enabling Coexistence
 
 Coexistence is enabled in menuconfig:
 
 ```
-Component config > Wi-Fi > Software controls WiFi/Bluetooth coexistence > Enable
+Component config > Wireless Coexistence > Software controls WiFi/Bluetooth coexistence > Enable
 ```
 
 You can also set the coexistence mode to favor one protocol:
@@ -622,17 +611,16 @@ esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
 ### Practical Tips for Coexistence
 
-1. **Increase BLE connection interval** when Wi-Fi is active. A 30 ms interval gives Wi-Fi more time slots than a 7.5 ms interval.
-2. **Avoid large Wi-Fi transfers during BLE advertising**. If you need to send an HTTP request, do it between advertising bursts.
-3. **Use BLE notifications instead of reads**. Notifications are scheduled by the peripheral, so the stack can plan around Wi-Fi activity. Client-initiated reads arrive at unpredictable times.
-4. **Monitor RSSI on both links**. If BLE RSSI drops sharply when Wi-Fi is active, increase the connection interval or reduce Wi-Fi duty cycle.
+1. Use a longer BLE connection interval while Wi-Fi is active. An interval of 30 ms leaves Wi-Fi more of the time than 7.5 ms does.
+2. Prefer notifications to reads. The peripheral chooses when a notification goes, so the stack can place it around Wi-Fi activity. A read arrives when the client decides.
+3. If BLE packets are lost when Wi-Fi is busy, send less over Wi-Fi at one time.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-Here is the full `main.c` that integrates everything: NimBLE initialization, GATT server with the Environmental Sensing Service, DHT22 sensor reading, advertising, notifications, and connection handling.
+This is the full `main.c`. It joins the parts above: the NimBLE start, the GATT table, the DHT22 driver, advertising, notifications and the connection events. Read `app_main` at the end first. It shows the order in which everything starts.
 
 ### Project Structure
 
@@ -647,13 +635,13 @@ Here is the full `main.c` that integrates everything: NimBLE initialization, GAT
 
 ### sdkconfig.defaults
 
-Set these defaults so you do not have to run menuconfig manually every time:
+These defaults replace the menuconfig steps:
 
 ```ini
 # Enable Bluetooth with NimBLE host
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_DEVICE_NAME="ESP32-ENV"
+CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="ESP32-ENV"
 
 # BLE settings
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
@@ -685,6 +673,7 @@ idf_component_register(
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "nvs_flash.h"
 
 /* NimBLE headers */
@@ -707,7 +696,7 @@ static const char *TAG = "BLE_ENV";
 /* BLE State                                                          */
 /* ------------------------------------------------------------------ */
 static const char *device_name = "ESP32-ENV";
-static uint16_t conn_handle_active = 0;
+static uint16_t conn_handle_active = BLE_HS_CONN_HANDLE_NONE;
 static bool is_connected = false;
 static bool temp_notify_enabled = false;
 static bool humi_notify_enabled = false;
@@ -727,10 +716,12 @@ static bool dht22_read(float *temperature, float *humidity)
     uint8_t data[5] = {0};
     int64_t timeout;
 
-    /* Send start signal: pull low 1 ms, then release */
+    /* Send start signal: pull low 2 ms, then release.
+     * A busy-wait is used because vTaskDelay(pdMS_TO_TICKS(2)) is
+     * zero ticks at the default 100 Hz tick rate. */
     gpio_set_direction(DHT22_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(DHT22_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    esp_rom_delay_us(2000);
     gpio_set_level(DHT22_GPIO, 1);
 
     /* Switch to input and wait for sensor response */
@@ -926,6 +917,8 @@ static void start_advertising(void)
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    adv_params.itvl_min = BLE_GAP_ADV_ITVL_MS(100);  /* 100 ms */
+    adv_params.itvl_max = BLE_GAP_ADV_ITVL_MS(150);  /* 150 ms */
 
     rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
                            &adv_params, gap_event_handler, NULL);
@@ -951,7 +944,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
             /* Request preferred connection parameters */
             struct ble_gap_upd_params params = {
-                .itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN,
+                .itvl_min = 6,     /* 7.5 ms */
                 .itvl_max = 24,    /* 30 ms */
                 .latency  = 0,
                 .supervision_timeout = 400,  /* 4 seconds */
@@ -970,7 +963,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Disconnected, reason=0x%02x",
                  event->disconnect.reason);
-        conn_handle_active = 0;
+        conn_handle_active = BLE_HS_CONN_HANDLE_NONE;
         is_connected = false;
         temp_notify_enabled = false;
         humi_notify_enabled = false;
@@ -1133,15 +1126,6 @@ void app_main(void)
 }
 ```
 
-### Forward Declaration Note
-
-In the code above, `gap_event_handler` is referenced by `start_advertising` and vice versa. If your compiler complains about forward references, add a forward declaration at the top of the file:
-
-```c
-static int gap_event_handler(struct ble_gap_event *event, void *arg);
-static void start_advertising(void);
-```
-
 ### Build and Flash
 
 ```bash
@@ -1154,7 +1138,6 @@ You should see output like this:
 
 ```
 I (423) BLE_ENV: BLE Environmental Sensor starting
-I (453) NimBLE: BLE Host Task Started
 I (453) BLE_ENV: NimBLE host task started
 I (463) BLE_ENV: Advertising started
 I (463) BLE_ENV: Initialization complete
@@ -1167,26 +1150,24 @@ I (7463) BLE_ENV: Sensor: 24.4 C, 61.5% RH | BLE: temp=2440, humi=6150
 <InArticleAd />
 
 
-The easiest way to test your BLE environmental beacon is with the nRF Connect app, available free for both Android and iOS.
+Test the sensor with nRF Connect, a free app for Android and iOS.
 
 <Steps>
 1. Install **nRF Connect** from the Google Play Store or Apple App Store.
 
-2. Open the app and tap **Scan**. Your device should appear as **ESP32-ENV** with a small tag showing the Environmental Sensing Service UUID.
+2. Open the app and tap **Scan**. The device appears as **ESP32-ENV**.
 
-3. Tap **Connect** on the ESP32-ENV entry. The app will establish a BLE connection and display the GATT service tree.
+3. Tap **Connect**. The app connects and shows the GATT services.
 
-4. Expand the **Environmental Sensing** service (UUID 0x181A). You will see two characteristics:
-   - **Temperature** (0x2A6E)
-   - **Humidity** (0x2A6F)
+4. Open the **Environmental Sensing** service (UUID 0x181A). It has two characteristics: **Temperature** (0x2A6E) and **Humidity** (0x2A6F).
 
-5. Tap the **single down-arrow icon** next to Temperature to perform a read. The app will display the raw value and, because it recognizes the standard UUID, it may show the interpreted value (e.g., "24.30 C").
+5. Tap the **single down-arrow icon** beside Temperature to read it once. The app shows the raw bytes and, because it knows the standard UUID, perhaps the value too ("24.30 C").
 
-6. Tap the **triple down-arrow icon** (or the notification icon) next to Temperature to enable notifications. The value will now update automatically every 5 seconds.
+6. Tap the **triple down-arrow icon** beside Temperature to switch notifications on. The value now changes every 5 seconds.
 
-7. Repeat for Humidity. Both values should update in real-time as the DHT22 takes new readings.
+7. Do the same for Humidity.
 
-8. Check the ESP32 serial monitor. You should see log messages confirming the connection, subscription, and notification sends.
+8. Look at the serial monitor of the ESP32. The log shows the connection and the subscription.
 </Steps>
 
 ### Troubleshooting
@@ -1197,10 +1178,10 @@ The easiest way to test your BLE environmental beacon is with the nRF Connect ap
 | Connection drops immediately | Parameter negotiation failure | Try removing the `ble_gap_update_params` call |
 | Read returns 0 | Sensor not initialized yet | Wait for the first DHT22 reading (2 second warm-up) |
 | Notifications not received | CCCD not written | Tap the notification icon in nRF Connect (not just the read icon) |
-| "GATT Error 0x0E" | MTU too small for data | Default MTU (23 bytes) is enough for 2-byte values; check data size |
+| "GATT Error 0x0E" | The access callback returned `BLE_ATT_ERR_UNLIKELY` (0x0E) | Check the UUID and operation handled in `gatt_access_cb`. The default MTU (23 bytes, 20 of them for the value) is already enough for 2-byte values |
 
 :::tip[Instrument it]
-BLE is the right link for a sensor that must run for months on a coin cell and only needs to reach a phone or a nearby gateway: a temperature beacon on a cold-store door, a vibration tag on a motor, a wearable. Notify the reading rather than letting the client poll, so the radio sleeps between updates, and a gateway can collect several tags and [forward them onward](/education/iot-systems/) to [siliconwit.io](https://siliconwit.io). It is monitoring without the power cost of Wi-Fi.
+BLE suits a sensor that must run for months on a small battery and needs to reach only a phone or a gateway nearby: a temperature tag on a cold store door, a vibration tag on a motor. Send the reading as a notification, so that the radio sleeps between updates. A gateway can collect several tags and [forward them onward](/education/iot-systems/) to [siliconwit.io](https://siliconwit.io).
 :::
 
 ## Exercises
@@ -1209,19 +1190,19 @@ BLE is the right link for a sensor that must run for months on a coin cell and o
 
 
 <Card title="Exercise 1: Battery Level Service" icon="pencil">
-Add a second GATT service: the Battery Service (UUID `0x180F`) with the Battery Level characteristic (UUID `0x2A19`). The battery level is a single `uint8_t` representing percentage (0 to 100). Since the ESP32 DevKitC is USB-powered, simulate the battery level by reading the ESP32's internal hall sensor or simply decrementing a counter every 60 seconds.
+Add a second GATT service: the Battery Service (UUID `0x180F`) with the Battery Level characteristic (UUID `0x2A19`). The battery level is a single `uint8_t` representing percentage (0 to 100). Since the ESP32 DevKitC is USB-powered, simulate the battery level by decrementing a counter every 60 seconds.
 </Card>
 
 <Card title="Exercise 2: Advertising with Sensor Data" icon="pencil">
-Modify the advertising data to include the latest temperature reading as manufacturer-specific data. Use company ID `0xFFFF` (reserved for testing). This allows passive scanners to read the temperature without connecting. Keep the advertising packet under 31 bytes.
+Modify the advertising data to include the latest temperature reading as manufacturer-specific data. Use company ID `0xFFFF` (reserved for testing). A scanner can then read the temperature without connecting. Keep the packet within 31 bytes.
 </Card>
 
 <Card title="Exercise 3: Multi-Client Support" icon="pencil">
-Modify the firmware to support up to 3 simultaneous connections. Replace the single `conn_handle_active` variable with an array of connection handles and track notification subscriptions per connection. Update `send_notification` to iterate over all active connections.
+Support up to 3 connections at once: replace `conn_handle_active` with an array of connection handles, track the subscriptions of each connection, and make `send_notification` loop over all active connections.
 </Card>
 
 <Card title="Exercise 4: BLE + Wi-Fi Dual Mode" icon="pencil">
-Combine this lesson with Lesson 5 (HTTP Server). Run the BLE GATT server and an HTTP server simultaneously. The HTTP endpoint `/api/sensor` returns JSON with temperature and humidity. The BLE characteristics serve the same data. Verify that both interfaces work at the same time, and measure the impact on BLE notification latency when the HTTP server is handling requests.
+Combine this lesson with the [HTTP server lesson](/education/embedded-programming-esp32/http-server-rest-api/): run the BLE GATT server and an HTTP server together, with `/api/sensor` returning the temperature and humidity as JSON and the BLE characteristics serving the same data. Check that both work at once, and measure how much later BLE notifications arrive while the HTTP server handles requests.
 </Card>
 
 ## Summary
@@ -1229,17 +1210,13 @@ Combine this lesson with Lesson 5 (HTTP Server). Run the BLE GATT server and an 
 <InArticleAd />
 
 
-In this lesson you built a complete BLE environmental sensor using the NimBLE stack on ESP-IDF. You learned the BLE protocol stack from the ground up: GAP for advertising and connection management, GATT for structured data exchange, and the notification mechanism for real-time updates.
+You built a BLE sensor with the NimBLE stack that any phone can find and read.
 
-Key takeaways:
-
-- **BLE is event-driven**. Both GAP and GATT use callbacks for connection events, read requests, and subscription changes.
-- **Standard UUIDs matter**. Using the official Environmental Sensing Service (0x181A) with standard Temperature (0x2A6E) and Humidity (0x2A6F) characteristics means any compliant BLE client can interpret your data without custom code.
-- **NimBLE is the right choice** for BLE-only projects on ESP32. It uses significantly less memory than Bluedroid and integrates cleanly with ESP-IDF v5.x.
-- **Notifications are more efficient than polling**. The client subscribes once by writing to the CCCD, and the server pushes updates only when values change.
-- **Coexistence requires planning**. When running BLE and Wi-Fi simultaneously, increase BLE connection intervals and schedule Wi-Fi transfers to minimize radio conflicts.
-
-In the next lesson you will add MQTT cloud communication, enabling your sensor data to flow from BLE to the internet.
+- GAP is how the device is found: an advertising packet of at most 31 bytes, repeated at an interval you choose.
+- GATT is how the data is arranged: a service holds characteristics, and each has a UUID. With the standard UUIDs (0x181A, 0x2A6E, 0x2A6F) and the standard formats, any client understands the data.
+- Your code does not wait for the radio. NimBLE calls your callbacks when a client connects, reads or subscribes.
+- A read gives one value. To follow a value, the client subscribes once by writing to the CCCD, and the server then sends each new reading. The subscription ends with the connection.
+- BLE and Wi-Fi share one radio. When both run, use a longer BLE connection interval.
 
 <EmbeddedProgrammingEsp32Comments />
 

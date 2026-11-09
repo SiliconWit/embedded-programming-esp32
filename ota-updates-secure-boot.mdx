@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Once your ESP32 is mounted inside an enclosure or deployed on a rooftop, walking over with a USB cable is not practical. OTA (Over-the-Air) updates let you push new firmware across Wi-Fi, and the ESP32's dual OTA partition scheme means a failed update rolls back automatically instead of bricking the device. In this lesson you will also lock down the device with flash encryption and secure boot v2, so only firmware you have signed can run. These are the features that separate a prototype from a product. #ESP32 #OTA #Security
+A sensor node is closed in a box on a roof, and you find a mistake in its firmware. Without a way to update it from a distance, someone must climb up with a laptop and a USB cable, for every node. An OTA (over-the-air) update sends new firmware over Wi-Fi. The danger is an update that does not work: it could leave the node dead and out of reach. So the ESP32 keeps the old firmware in a second place in flash and goes back to it when the new one fails. In this lesson you build that, and you also see how flash encryption and secure boot v2 stop other people from reading your firmware or loading their own. #ESP32 #OTA #Security
 
 ## What We Are Building
 
 <Card title="Remotely Updateable Sensor Node" icon="star">
-A sensor node that checks for firmware updates from an HTTP server on your local network. When a new firmware binary is available, the ESP32 downloads it, writes it to the inactive OTA partition, verifies the image, and reboots into the new firmware. If the new firmware fails a self-test, the bootloader rolls back to the previous working version. The lesson also walks through enabling flash encryption and secure boot v2 in development mode.
+A sensor node that checks for firmware updates from an HTTP server on your local network. When a new firmware binary is available, the ESP32 downloads it, writes it to the inactive OTA partition, verifies the image, and reboots into the new firmware. If the new firmware fails a self-test, the bootloader rolls back to the previous working version. The lesson also walks through enabling flash encryption in development mode and secure boot v2.
 </Card>
 
 **Project specifications:**
@@ -45,15 +45,15 @@ A sensor node that checks for firmware updates from an HTTP server on your local
 | Flash Encryption | AES-256, development mode (reflashable) |
 | Secure Boot | v2 (RSA-PSS signature verification) |
 | Version Tracking | Firmware version string in app description |
-| Self-Test | Wi-Fi connect + sensor read within 30 seconds |
-| Sensor | Reuse DHT22 or any sensor from previous lessons |
+| Self-Test | Wi-Fi connect within 15 seconds + sensor read |
+| Sensor | The DHT22 from the HTTP server lesson, or any sensor |
 
 ### Bill of Materials
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from previous lessons |
-| S1 | DHT22 or any sensor | 1 | Reused, for self-test verification |
+| U1 | ESP32 DevKitC | 1 | The board you have used so far |
+| S1 | DHT22 or any sensor | 1 | Read by the self-test |
 | | Computer on same Wi-Fi network | 1 | Hosts firmware binary via Python HTTP server |
 | | Breadboard + jumper wires | 1 set | |
 
@@ -62,12 +62,13 @@ A sensor node that checks for firmware updates from an HTTP server on your local
 <InArticleAd />
 
 
-The ESP32 can hold multiple firmware images in flash at once. The bootloader uses a data structure called `otadata` to decide which image to boot. The key idea is simple: while one firmware image is running, the other partition sits idle and can be overwritten with a new version. If the new version fails, the bootloader switches back.
+A program cannot safely overwrite itself while it runs, and a power cut half way would leave half a program. So the flash is divided into partitions, fixed regions with one purpose each, and two of them (the OTA slots) can each hold a complete copy of the firmware, an image. While one slot runs, the new version is written to the other, as a new bridge is built beside the old one while traffic still crosses. The bootloader, the small program that runs first after every reset, reads a record called `otadata` to choose which slot to start, and goes back to the old slot if the new version fails.
+
+The drawing shows the layout for a 4 MB flash chip. The factory partition holds the firmware you flash first over USB.
 
 ```text
- OTA Dual Partition Layout (4 MB Flash)
  ┌─────────────────────┐ 0x000000
- │  Bootloader         │
+ │  Bootloader + table │
  ├─────────────────────┤ 0x009000
  │  NVS (16 KB)        │
  ├─────────────────────┤ 0x00D000
@@ -75,19 +76,17 @@ The ESP32 can hold multiple firmware images in flash at once. The bootloader use
  ├─────────────────────┤ 0x00F000
  │  phy_init (4 KB)    │
  ├─────────────────────┤ 0x010000
- │  factory (1792 KB)  │ <-- initial USB flash
- ├─────────────────────┤ 0x1D0000
- │  ota_0 (1792 KB)    │ <-- OTA slot A
- ├─────────────────────┤ 0x390000
- │  ota_1 (1792 KB)    │ <-- OTA slot B
+ │  factory (1344 KB)  │ <-- initial USB flash
+ ├─────────────────────┤ 0x160000
+ │  ota_0 (1344 KB)    │ <-- OTA slot A
+ ├─────────────────────┤ 0x2B0000
+ │  ota_1 (1344 KB)    │ <-- OTA slot B
  └─────────────────────┘ 0x400000
-  Bootloader alternates between ota_0/ota_1.
-  Failed update rolls back automatically.
 ```
 
 ### Default vs. Custom Partition Table
 
-ESP-IDF ships with several built-in partition tables, but for OTA you need at least two app partitions. The most common OTA layout uses a factory partition (the initial firmware flashed via USB), two OTA slots, and an otadata partition that tracks which slot is active.
+ESP-IDF has several ready partition tables, but OTA needs at least two partitions that can hold an app. This lesson uses a factory partition, two OTA slots, and the `otadata` partition that records which slot is active.
 
 Create a file called `partitions.csv` in your project root:
 
@@ -96,12 +95,18 @@ Create a file called `partitions.csv` in your project root:
 nvs,       data,  nvs,      0x9000,   0x4000,
 otadata,   data,  ota,      0xd000,   0x2000,
 phy_init,  data,  phy,      0xf000,   0x1000,
-factory,   app,   factory,  0x10000,  0x1C0000,
-ota_0,     app,   ota_0,    0x1D0000, 0x1C0000,
-ota_1,     app,   ota_1,    0x390000, 0x1C0000,
+factory,   app,   factory,  0x10000,  0x150000,
+ota_0,     app,   ota_0,    0x160000, 0x150000,
+ota_1,     app,   ota_1,    0x2B0000, 0x150000,
 ```
 
-Each app partition is 0x1C0000 bytes (1,792 KB), which comfortably fits most ESP-IDF applications. The total fits within a 4 MB flash chip. You can adjust sizes as needed, but every app partition must be large enough for your compiled firmware.
+Offsets and sizes are in hexadecimal. Each app partition is 0x150000 bytes (1,344 KB), which holds a typical Wi-Fi application with room to grow. The bootloader is at 0x1000 and the partition table at 0x8000, below the first entry. The three app partitions start at 0x10000 and end exactly at the end of a 4 MB flash chip:
+
+$$
+\text{0x10000} + 3 \times \text{0x150000} = \text{0x400000}
+$$
+
+You may change the sizes, but an update can land in either OTA slot, so every app partition must be large enough for your compiled firmware.
 
 To use this custom table, open `menuconfig`:
 
@@ -109,25 +114,25 @@ To use this custom table, open `menuconfig`:
 idf.py menuconfig
 ```
 
-Navigate to **Partition Table** and select **Custom partition table CSV**. Set the filename to `partitions.csv`.
+Navigate to **Partition Table** and select **Custom partition table CSV**. Set the filename to `partitions.csv`. Also set **Serial flasher config > Flash size** to **4 MB**. The default is 2 MB, and the build stops if the table does not fit.
 
 ### How otadata Works
 
-The `otadata` partition is a small (8 KB) data region that the bootloader reads on every boot. It contains two 32-byte entries, one for each OTA slot. Each entry stores:
+The `otadata` partition is a small (8 KB) region that the bootloader reads at every start. It holds two copies of a 32-byte entry, one in each flash sector, so that a power failure during a write cannot destroy both. Each entry stores:
 
-- A sequence number (incremented with each OTA write)
-- A CRC32 checksum for validation
+- A sequence number, which rises by one with each OTA update and selects the slot
+- A CRC32 checksum, a number calculated from the entry that shows whether the entry is damaged
 - A state field: `ESP_OTA_IMG_NEW`, `ESP_OTA_IMG_PENDING_VERIFY`, `ESP_OTA_IMG_VALID`, `ESP_OTA_IMG_INVALID`, or `ESP_OTA_IMG_ABORTED`
 
-The bootloader picks the OTA slot with the highest valid sequence number. If that image is marked invalid or aborted, it falls back to the other slot, and ultimately to the factory partition. This is the foundation of automatic rollback.
+The bootloader takes the copy with the highest valid sequence number and finds the slot from it. With two slots, sequence 1 selects ota_0, 2 selects ota_1, and 3 selects ota_0 again. If that image is marked invalid or aborted, the bootloader goes back to the other slot, and if that fails too, to the factory partition. Going back to the earlier firmware is called rollback.
 
 ### Boot Flow
 
 <Steps>
 1. Bootloader reads otadata from flash.
-2. It compares sequence numbers of ota_0 and ota_1.
+2. It compares the sequence numbers of the two otadata copies and takes the higher valid one, which names the slot.
 3. It checks the state field of the selected partition.
-4. If the state is `PENDING_VERIFY` and rollback is enabled, the app must call `esp_ota_mark_app_valid_cancel_rollback()` before the watchdog times out, or the bootloader will mark it invalid on the next reboot.
+4. If the state is `PENDING_VERIFY` and rollback is enabled, the app must call `esp_ota_mark_app_valid_cancel_rollback()` before the device resets again, or the bootloader will mark it aborted on the next boot.
 5. If no valid OTA partition is found, the bootloader loads the factory image.
 </Steps>
 
@@ -135,13 +140,13 @@ The bootloader picks the OTA slot with the highest valid sequence number. If tha
 %%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart TD
     A(["Bootloader starts"]) --> B["Read otadata\nfrom flash"]
-    B --> C{"ota_0 or ota_1\nhigher sequence?"}
-    C --> D["Select partition\nwith higher seq"]
+    B --> C{"Which otadata copy\nhas higher sequence?"}
+    C --> D["Select the slot\nthat copy names"]
     D --> E{"State field?"}
     E -->|VALID| F(["Boot selected\npartition"])
-    E -->|PENDING_VERIFY| G{"App calls\nmark_valid\nbefore WDT?"}
+    E -->|PENDING_VERIFY| G{"App calls\nmark_valid\nbefore next reset?"}
     G -->|Yes| F
-    G -->|No / WDT fires| H["Mark INVALID\non next reboot"]
+    G -->|No / device resets| H["Mark ABORTED\non next boot"]
     E -->|INVALID / ABORTED| I["Try other\nOTA slot"]
     H --> I
     I --> J{"Other slot\nvalid?"}
@@ -154,11 +159,11 @@ flowchart TD
 <InArticleAd />
 
 
-ESP-IDF provides two levels of OTA API. The high-level `esp_https_ota()` function handles the entire download-and-flash process in one call. The lower-level API (`esp_ota_begin`, `esp_ota_write`, `esp_ota_end`) gives you control over each step. We will use the lower-level API so you understand exactly what happens.
+ESP-IDF gives two ways to write an update: `esp_https_ota()` downloads and writes the whole image in one call, and the lower-level functions (`esp_ota_begin`, `esp_ota_write`, `esp_ota_end`) let you do each step yourself. This lesson uses the lower-level functions, so you see every step.
 
 ### Finding the Next OTA Partition
 
-Before writing firmware, you need to know which partition to write to. The API handles this automatically:
+First find the slot that is not in use. One function returns it:
 
 ```c
 #include "esp_ota_ops.h"
@@ -177,7 +182,7 @@ If the device is running from `ota_0`, the next update partition is `ota_1`, and
 
 ### The OTA Write Cycle
 
-The three-step process is straightforward:
+Writing an update has three steps, then one call that tells the bootloader to use the new slot:
 
 ```c
 esp_ota_handle_t ota_handle;
@@ -215,14 +220,16 @@ ESP_LOGI(TAG, "OTA update written successfully. Rebooting...");
 esp_restart();
 ```
 
-`esp_ota_begin()` erases the target partition. `esp_ota_write()` is called repeatedly as you receive chunks of firmware data from the network. `esp_ota_end()` validates the complete image (checks the magic byte, segment headers, and SHA-256 hash appended to the binary). If any step fails, call `esp_ota_abort()` to clean up.
+`esp_ota_begin()` erases the target partition. You call `esp_ota_write()` once for each piece of the image that arrives from the network. `esp_ota_end()` checks the complete image: its first byte, its headers, and the SHA-256 hash at its end, a fingerprint that changes if any byte changed. If a step fails, call `esp_ota_abort()`.
+
+This check proves that the image arrived whole. It cannot prove that the program in it works. That is the task of the rollback mechanism later in this lesson.
 
 ## Firmware Version Tracking
 
 <InArticleAd />
 
 
-You should never blindly apply an OTA update. Comparing version strings lets the device skip updates it already has and provides useful logging.
+A device that checks every minute must not write the same firmware every minute: it compares version strings and skips an update it already has.
 
 ### Reading the Current Version
 
@@ -251,50 +258,55 @@ ESP_LOGI(TAG, "Compile time: %s %s", app_desc->date, app_desc->time);
 
 ### Comparing Versions Before Updating
 
-After downloading the first 256 bytes of the new firmware image (which contain the app description), you can extract the version of the incoming firmware and compare it:
+After downloading the first 288 bytes of the new firmware image (a 24-byte image header, an 8-byte segment header, then the 256-byte app description), you can extract the version of the incoming firmware and compare it:
 
 ```c
 #include "esp_app_desc.h"
+#include "esp_app_format.h"
 
-/* After receiving the first chunk of the OTA image */
+/* Copy the app description out of the first chunk of the OTA image.
+ * It follows the image header and the first segment header. */
 esp_app_desc_t incoming_desc;
-err = esp_ota_get_partition_description(update_partition, &incoming_desc);
+memcpy(&incoming_desc,
+       &data_buffer[sizeof(esp_image_header_t) +
+                    sizeof(esp_image_segment_header_t)],
+       sizeof(esp_app_desc_t));
 
-/* Or parse it from the downloaded image header */
-const esp_app_desc_t *new_desc = esp_ota_get_app_description();
+/* For an image that is already written to a partition, use
+ * esp_ota_get_partition_description(update_partition, &incoming_desc) */
 
 /* Simple string comparison */
 const esp_app_desc_t *current = esp_app_get_description();
-if (strcmp(current->version, new_version_string) == 0) {
+if (strcmp(current->version, incoming_desc.version) == 0) {
     ESP_LOGI(TAG, "Firmware is already up to date (%s)", current->version);
     return;  /* Skip update */
 }
-ESP_LOGI(TAG, "Updating from %s to %s", current->version, new_version_string);
+ESP_LOGI(TAG, "Updating from %s to %s", current->version, incoming_desc.version);
 ```
 
-In our complete firmware, we will parse the version from an HTTP header to avoid downloading the entire binary just to check the version.
+The complete firmware uses a simpler way: it reads the version from a small `version.txt` file on the server, so it does not start the download of the image to learn the version.
 
 ## Rollback Mechanism
 
 <InArticleAd />
 
 
-Rollback is what makes OTA safe. Without it, a buggy firmware update turns your device into an expensive paperweight. ESP-IDF supports automatic rollback through the `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` option.
+Rollback makes OTA safe: without it, one update with a mistake leaves the device dead where nobody can reach it. A new image starts on trial and stays only if the firmware itself reports that it works. ESP-IDF does this when `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is on.
 
 ### Enabling Rollback
 
-In `menuconfig`, navigate to **Bootloader config** and enable **Enable app rollback support**. You can also set a watchdog timeout under **Bootloader config > App rollback watchdog timeout** (default is 30 seconds).
+In `menuconfig`, go to **Bootloader config** and enable **Enable app rollback support**.
 
-When rollback is enabled, the boot flow changes:
+No timer ends the trial. An image still on trial (pending verification) is rolled back at the next reset, whatever causes it; a firmware that neither confirms itself nor resets stays on trial without end. So the firmware must test itself soon after the start, with its own time limits, and reset when the test fails.
+
+With rollback enabled, an update follows this path:
 
 ```text
- OTA Rollback Flow
  ┌─────────────┐    ┌────────────────┐
  │  OTA Write  │    │  Reboot into   │
  │  new image  ├───>│  new firmware  │
  │  to ota_1   │    │  (PENDING)     │
  └─────────────┘    └───────┬────────┘
-                            │
                   ┌─────────┴─────────┐
                   │  Self-test pass?  │
                   └────┬─────────┬────┘
@@ -308,13 +320,13 @@ When rollback is enabled, the boot flow changes:
 ```
 
 1. After an OTA update, the new firmware boots with status `ESP_OTA_IMG_PENDING_VERIFY`.
-2. The firmware must call `esp_ota_mark_app_valid_cancel_rollback()` before the watchdog timeout expires.
-3. If the firmware crashes, hangs, or fails its self-test before calling that function, the watchdog triggers a reboot.
+2. The firmware must call `esp_ota_mark_app_valid_cancel_rollback()` before the device resets again.
+3. If the firmware crashes, hangs until a watchdog resets it, or fails its self-test before calling that function, the device reboots.
 4. On the next boot, the bootloader sees the `PENDING_VERIFY` state and marks the partition as `ESP_OTA_IMG_ABORTED`, then boots the previous working partition.
 
 ### Self-Test Pattern
 
-The self-test should verify that critical functionality works. For a sensor node, that means: can we connect to Wi-Fi, and can we read the sensor?
+The self-test checks the things the device cannot live without. The first is the path for the next update: a firmware that cannot reach the network can never be repaired from a distance. For a sensor node the test asks two questions: can it connect to Wi-Fi, and can it read the sensor?
 
 ```c
 static bool run_self_test(void)
@@ -363,14 +375,16 @@ void app_main(void)
 }
 ```
 
-The call to `esp_ota_mark_app_invalid_rollback_and_reboot()` immediately marks the current partition as invalid and reboots. The bootloader then loads the previous working firmware. This happens transparently; the device recovers without human intervention.
+The call to `esp_ota_mark_app_invalid_rollback_and_reboot()` marks the running partition as invalid and resets the chip. The bootloader then starts the earlier firmware, and nobody has to visit the device.
+
+This snippet shows the pattern only. `wifi_connect_with_timeout(15000)` stands for any function that waits up to 15 seconds for Wi-Fi. The complete firmware below uses its own function for this, `wifi_wait_connected(SELF_TEST_TIMEOUT)`, with `SELF_TEST_TIMEOUT` set to 15000 ms.
 
 ## Hosting Firmware on Your Network
 
 <InArticleAd />
 
 
-You need a way to serve the compiled `.bin` file to the ESP32. During development, a simple Python HTTP server on your laptop is the easiest approach.
+The ESP32 fetches the compiled `.bin` file from a server; for development, Python's built-in HTTP server is enough. Plain HTTP is for your own bench only: anyone on the network can read or replace the file. A device in the field needs HTTPS (Exercise 1) and signed images (the secure boot part below).
 
 ### Serving Firmware with Python
 
@@ -406,24 +420,24 @@ Look for the IPv4 address under your Wi-Fi adapter.
 
 ### Version Header Trick
 
-To let the ESP32 check the firmware version without downloading the entire binary, you can create a small version file alongside the firmware:
+So that the ESP32 can learn the version without the large file, put a small version file beside the firmware:
 
 ```bash
 echo "1.1.0" > build/version.txt
 ```
 
-The ESP32 first fetches `version.txt` (a few bytes), compares it with its current version, and only downloads the full binary if the version differs. We will implement this in the complete firmware below.
+The ESP32 first fetches `version.txt` (a few bytes) and compares it with its own version. It downloads the image only if the two differ.
 
 ## Flash Encryption (Development Mode)
 
 <InArticleAd />
 
 
-Flash encryption prevents someone from reading your firmware off the flash chip with a simple SPI reader. Without encryption, anyone with physical access can dump the entire flash contents, extract your Wi-Fi credentials, API keys, proprietary algorithms, or any other sensitive data stored in the binary.
+The flash chip is a separate part beside the ESP32, and a cheap reader clipped onto it copies everything: your Wi-Fi password, your keys, your program. Flash encryption stores it all in a form that only this one chip can read.
 
 ### What Flash Encryption Protects
 
-When enabled, the ESP32 encrypts flash contents using AES-256. The encryption key is stored in an eFuse (one-time programmable memory inside the chip) and is not readable by software. The hardware decrypts data transparently as the CPU reads from flash, so your code runs at full speed with no changes.
+When it is enabled, the ESP32 encrypts the flash contents with AES-256, a standard cipher. The key is stored in eFuse, memory inside the chip that can be written only once, and software cannot read it. The hardware decrypts the data as the CPU reads it, so your code needs no change.
 
 Flash encryption protects:
 - All app partitions (factory, ota_0, ota_1)
@@ -439,7 +453,7 @@ It does **not** encrypt:
 ### Development Mode vs. Production Mode
 
 :::caution[Critical Warning]
-Flash encryption has two modes. **Development mode** allows you to reflash the device via UART and has a limited number of reflash cycles (controlled by an eFuse counter). **Production mode** permanently disables UART flashing. Once production mode is set, the eFuse is burned and there is no way to undo it. You cannot flash new firmware over USB ever again. For learning and prototyping, always use development mode.
+Flash encryption has two modes. **Development mode** lets you flash the device again over the serial port (UART). Encrypted flashing is not limited, but switching encryption off to flash unencrypted firmware is limited by an eFuse counter. **Production mode** disables UART flashing for good. The eFuse is burned and it cannot be undone: you can never again flash firmware over USB. For learning and prototyping, always use development mode.
 :::
 
 ### Enabling Flash Encryption
@@ -449,31 +463,31 @@ In `menuconfig`, navigate to:
 <Steps>
 1. Go to **Security features**.
 2. Set **Enable flash encryption on boot** to **Yes**.
-3. Set **Enable usage mode** to **Development (NOT recommended for production)**.
-4. Under **Potentially insecure options**, enable **Leave flash encryption enabled in UART bootloader** if you want to reflash via USB during development.
+3. Set **Enable usage mode** to **Development (NOT SECURE)**.
+4. Under **Potentially insecure options**, keep **Leave UART bootloader encryption enabled** switched on if you want to reflash via USB during development.
 </Steps>
 
-The first time you flash with encryption enabled, the ESP32 generates a random AES-256 key, burns it into eFuse, encrypts the flash contents in place, and increments the flash encryption counter. Subsequent UART reflashes in development mode increment this counter each time. Once the counter reaches its maximum (typically 3 or 7 reflashes depending on the chip revision), you can no longer reflash via UART even in development mode.
+The first time you flash with encryption enabled, the ESP32 generates a random AES-256 key, burns it into eFuse, encrypts the flash contents in place, and sets the first bit of the flash encryption counter (`FLASH_CRYPT_CNT`, 7 bits on the ESP32). In development mode you reflash with `idf.py encrypted-flash monitor`, which encrypts the data over UART and does not use the counter. Only switching encryption off to flash plaintext and on again burns counter bits, and that can be done only 3 times per chip.
 
 ### Flash Encryption and OTA
 
-OTA updates work seamlessly with flash encryption. The ESP32 receives the firmware as plaintext over the network (protected by HTTPS or your own transport security), and the hardware encrypts it as it writes to flash. The OTA API handles this transparently. You do not need to pre-encrypt binaries for OTA.
+OTA needs no change for flash encryption. The image arrives unencrypted over the network (so protect it there with HTTPS), and the hardware encrypts it as the OTA functions write it to flash. You do not encrypt the binary yourself.
 
 ## Secure Boot v2
 
 <InArticleAd />
 
 
-Secure boot ensures that only firmware signed with your private key can run on the ESP32. Without secure boot, anyone with physical access could flash arbitrary firmware. Combined with flash encryption, secure boot provides a complete chain of trust: the bootloader verifies the firmware signature before execution, and flash encryption prevents reading or modifying the flash contents.
+Flash encryption is a lock: it stops reading, not someone loading a program of their own. Secure boot is a seal: the chip runs only firmware that carries your signature. A signature uses two keys: the private key, which only you hold, makes it; the public key, which anyone may know, can only check it. With both on, nobody else can read or replace the firmware in a device.
 
 ### How Secure Boot v2 Works
 
-Secure boot v2 uses RSA-PSS (RSA with Probabilistic Signature Scheme) with 3072-bit keys. The verification process works like this:
+Secure boot v2 uses the RSA-PSS signature method with 3072-bit keys. On the ESP32 it needs chip revision v3.0 or later (for example the ESP32-WROOM-32E module). Older chips support only secure boot v1. It works in four steps:
 
-1. You generate an RSA-3072 key pair. The private key stays on your development machine. The public key is embedded in the bootloader.
-2. During the build, the firmware binary is signed with your private key.
-3. On boot, the bootloader verifies the firmware's signature using the public key hash stored in eFuse.
-4. If the signature is invalid, the bootloader refuses to run the firmware.
+1. You generate an RSA-3072 key pair. The private key stays on your development machine. The public key goes into the bootloader.
+2. The build signs the firmware binary with your private key.
+3. At every start, the bootloader checks the signature of the firmware. The chip trusts the public key because a hash of it is stored in eFuse.
+4. If the signature is wrong, the bootloader does not run the firmware.
 
 ### Generating Signing Keys
 
@@ -500,36 +514,36 @@ In `menuconfig`:
 <Steps>
 1. Navigate to **Security features**.
 2. Set **Enable hardware Secure Boot in bootloader** to **Yes**.
-3. Select **Secure Boot v2 (RSA-PSS)** as the scheme.
-4. Set **Secure Boot Mode** to **Development (allows reflashing)**.
+3. Under **Select secure boot version**, choose **Enable Secure Boot version 2** (RSA-PSS). The option appears only when **Minimum Supported ESP32 Revision** is set to v3.0 or later.
+4. Leave **Sign binaries during build** enabled, so that the build signs the app and the bootloader.
 5. Set the path to your signing key: **Secure boot private signing key** should point to `secure_boot_signing_key.pem`.
 </Steps>
 
-:::caution[Development Mode Only]
-Just like flash encryption, secure boot has a development mode and a production mode. Production mode burns eFuses that permanently prevent unsigned firmware from running and disable JTAG. For this lesson, always use development mode. Switching to production mode is irreversible.
+:::caution[Secure Boot Is Permanent]
+Unlike flash encryption, secure boot v2 has no reflashable development mode. On the first boot the bootloader burns the digest of your public key and the secure boot enable bit into eFuse. From then on the chip runs only a bootloader and apps signed with your key, and this cannot be undone. You can still flash signed images over UART unless you also disable the download mode. Use a board you can dedicate to this, or read this section without applying it.
 :::
 
 ### Signing OTA Images
 
-When secure boot is enabled, all OTA firmware images must be signed before deployment. After building, sign the binary:
+When secure boot is enabled, every OTA image must be signed, and the device checks the signature before it accepts the image.
+
+If you left **Sign binaries during build** on, as the steps above say, `idf.py build` has already signed `build/ota_sensor_node.bin` and you do nothing more. You sign by hand only when the build does not sign, for example when the private key is kept on another machine:
 
 ```bash
 espsecure.py sign_data --version 2 \
     --keyfile secure_boot_signing_key.pem \
-    --output build/ota_sensor_node_signed.bin \
+    --output build/ota_sensor_node.bin \
     build/ota_sensor_node.bin
 ```
 
-Serve the signed binary from your HTTP server. The ESP32's OTA verification process checks the signature before accepting the image.
-
-If you enable both flash encryption and secure boot in `menuconfig`, the build system signs the binary automatically during `idf.py build`. You only need manual signing when preparing OTA update binaries outside the normal build flow.
+The output file has the same name as the input, because the complete firmware downloads `ota_sensor_node.bin`. Serve that signed file from your HTTP server.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-Here is the full `main.c` for the OTA sensor node. It connects to Wi-Fi, periodically checks an HTTP server for new firmware, downloads and flashes it if a new version is available, runs a self-test, and marks the firmware valid or rolls back.
+The full `main.c` for the OTA sensor node: it connects to Wi-Fi, asks an HTTP server every 60 seconds for a new version, and downloads and writes any it finds. After the restart it runs the self-test, then confirms the firmware or rolls back. Its DHT22 function is a placeholder that always succeeds, so only the Wi-Fi test can fail here.
 
 ### Project Structure
 
@@ -571,6 +585,9 @@ idf_component_register(
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
+# Flash size (the partition table needs 4 MB)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
 # Enable app rollback
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
@@ -585,9 +602,9 @@ CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 nvs,       data,  nvs,      0x9000,   0x4000,
 otadata,   data,  ota,      0xd000,   0x2000,
 phy_init,  data,  phy,      0xf000,   0x1000,
-factory,   app,   factory,  0x10000,  0x1C0000,
-ota_0,     app,   ota_0,    0x1D0000, 0x1C0000,
-ota_1,     app,   ota_1,    0x390000, 0x1C0000,
+factory,   app,   factory,  0x10000,  0x150000,
+ota_0,     app,   ota_0,    0x160000, 0x150000,
+ota_1,     app,   ota_1,    0x2B0000, 0x150000,
 ```
 
 ### main/main.c
@@ -704,7 +721,7 @@ static bool wifi_wait_connected(uint32_t timeout_ms)
 /* ---- Simplified DHT22 Read (for self-test) ---- */
 /*
  * This is a minimal DHT22 read for the self-test.
- * Replace with your actual DHT22 driver from Lesson 2.
+ * Replace with your actual DHT22 driver from Lesson 4.
  */
 static esp_err_t read_dht22(float *temperature, float *humidity)
 {
@@ -1028,20 +1045,19 @@ void app_main(void)
 
 ### How the Code Works
 
-The firmware follows this sequence on every boot:
+At every start the firmware does five things in order:
 
-1. **Print version info.** The app description is logged immediately so you can verify which version is running.
-2. **Initialize Wi-Fi.** The station connects to your configured network.
-3. **Check rollback state.** If this is the first boot after an OTA update, the partition state is `PENDING_VERIFY`. The self-test runs: it waits for Wi-Fi to connect and reads the sensor. If both pass, the firmware is marked valid. If either fails, the device rolls back and reboots.
-4. **Start OTA task.** A FreeRTOS task checks the HTTP server for a new `version.txt` file every 60 seconds. If the version differs from the current one, it downloads the full binary, writes it to the inactive OTA partition, sets it as boot partition, and reboots.
-5. **Normal operation.** The main loop reads the sensor every 10 seconds and logs the values.
+1. It prints the version, so the log shows which firmware is running.
+2. It starts Wi-Fi, which connects to your network.
+3. It checks the rollback state. On the first start after an OTA update the state is `PENDING_VERIFY`, and the self-test runs: it waits for Wi-Fi and reads the sensor. If both pass, the firmware is marked valid. If one fails, the device rolls back and restarts.
+4. It starts the OTA task. Every 60 seconds this FreeRTOS task fetches `version.txt`. If the version differs from its own, it downloads the image, writes it to the idle OTA slot, sets that slot as the boot partition and restarts.
+5. It runs the normal work: the main loop reads the sensor every 10 seconds and logs the values.
 
 ## Building, Signing, and Flashing
 
 <InArticleAd />
 
 
-Here is the complete workflow from source code to a deployed, updatable device.
 
 ### Initial Flash (USB)
 
@@ -1077,7 +1093,7 @@ Now simulate a firmware update. Change the version, rebuild, and serve the binar
    ```bash
    echo "1.1.0" > build/version.txt
    ```
-4. **Sign the binary** (only if secure boot is enabled):
+4. **Sign the binary** (only if secure boot is enabled and the build did not sign it):
    ```bash
    espsecure.py sign_data --version 2 \
        --keyfile secure_boot_signing_key.pem \
@@ -1105,7 +1121,7 @@ To verify that rollback works, intentionally break the self-test:
 
 ### Complete Workflow with Security
 
-If you want to enable both flash encryption and secure boot for the full security experience:
+To enable both flash encryption and secure boot:
 
 <Steps>
 1. Generate the signing key:
@@ -1114,7 +1130,7 @@ If you want to enable both flash encryption and secure boot for the full securit
    ```
 2. Run `idf.py menuconfig` and enable:
    - Flash encryption (development mode)
-   - Secure boot v2 (development mode)
+   - Secure boot v2 (permanent, see the caution in the Secure Boot v2 section)
    - Set the signing key path
    - Enable app rollback
 3. Build and flash:
@@ -1122,16 +1138,18 @@ If you want to enable both flash encryption and secure boot for the full securit
    idf.py build
    idf.py -p /dev/ttyUSB0 flash monitor
    ```
+   With secure boot enabled, `idf.py flash` does not write the bootloader. Run `idf.py bootloader` first and flash the signed bootloader once with the `esptool.py write_flash` command that it prints. The bootloader is also larger with these options. If the build reports that it does not fit below the partition table, raise **Partition Table > Offset of partition table** and adjust the offsets and sizes in `partitions.csv` to match.
+
    The first boot after flashing with these options takes longer. The ESP32 generates encryption keys, burns eFuses, and encrypts the flash in place. Watch the serial output carefully for any errors.
 4. For OTA updates, the signed binary is produced automatically during `idf.py build`. Copy it to your HTTP server directory.
 </Steps>
 
 :::caution[eFuse Warning]
-Every time you flash via UART with flash encryption in development mode, the flash encryption counter is incremented. You have a limited number of UART reflashes (typically 3). After that, you must use OTA exclusively. Plan your development workflow accordingly: get the base firmware working without encryption first, then enable security features when the code is stable.
+Flash encryption and secure boot burn eFuses on the first boot, and eFuses cannot be cleared. In development mode you can keep reflashing over UART with `idf.py encrypted-flash monitor`, but switching flash encryption off to load plaintext firmware is possible only 3 times per chip, and secure boot v2 cannot be switched off at all. Plan your development workflow accordingly: get the base firmware working without encryption first, then enable security features when the code is stable.
 :::
 
 :::tip[Instrument it]
-A monitor you deploy is a monitor you will need to change: a new threshold, a bug fix, a better model. OTA is what lets you do that to a node bolted inside a machine or sitting in a field without ever touching it, and secure boot with signed images is what stops anyone else pushing firmware to it. A fleet you can update and trust remotely is the difference between a one-off demo and infrastructure you [run for years](https://siliconwit.io).
+A monitor you install is a monitor you will need to change: a new threshold, a repaired mistake, a better model. OTA lets you change a node that is bolted inside a machine or standing in a field, and secure boot with signed images stops anyone else from loading firmware into it. Nodes that you can update and trust from a distance are equipment you can [run for years](https://siliconwit.io).
 :::
 
 ## Exercises
@@ -1141,7 +1159,7 @@ A monitor you deploy is a monitor you will need to change: a new threshold, a bu
 
 <CardGrid>
 <Card title="Exercise 1: HTTPS OTA" icon="puzzle">
-Replace the plain HTTP OTA with HTTPS. Generate a self-signed certificate for your Python server using `openssl`, embed the CA certificate in the ESP32 firmware using `EMBED_TXTFILES` in CMake, and configure `esp_http_client` with the `.cert_pem` field. Verify that the ESP32 rejects connections to servers with mismatched certificates.
+Replace plain HTTP with HTTPS: make a self-signed certificate for your Python server with `openssl`, embed the CA certificate with `EMBED_TXTFILES`, and set the `.cert_pem` field of `esp_http_client`. Check that the ESP32 refuses a server whose certificate does not match.
 </Card>
 
 <Card title="Exercise 2: OTA Progress LED" icon="puzzle">
@@ -1149,11 +1167,11 @@ Add visual feedback during OTA updates. Blink an LED slowly while checking for u
 </Card>
 
 <Card title="Exercise 3: Multi-Device Version Management" icon="puzzle">
-Modify the version check to include the device's MAC address as a query parameter when fetching `version.txt` (for example, `http://server:8080/version.txt?mac=AA:BB:CC:DD:EE:FF`). On the server side, write a small Python Flask script that serves different firmware versions to different devices based on MAC address, enabling staged rollouts.
+Add the device's MAC address to the `version.txt` request as a query parameter (for example `http://server:8080/version.txt?mac=AA:BB:CC:DD:EE:FF`). On the server, a small Python Flask script serves different versions to different MAC addresses, so you can update a few devices first (a staged rollout).
 </Card>
 
 <Card title="Exercise 4: NVS Encryption" icon="puzzle">
-Enable NVS encryption alongside flash encryption. Generate an NVS encryption key using `nvs_partition_gen.py`, add an `nvs_key` partition to your `partitions.csv`, and verify that NVS data (such as Wi-Fi credentials) is encrypted at rest. Dump the flash with `esptool.py read_flash` and confirm the NVS contents are not readable.
+Enable NVS encryption alongside flash encryption. Generate an NVS encryption key using `nvs_partition_gen.py`, add an NVS key partition (type `data`, subtype `nvs_keys`) to your `partitions.csv`, and verify that NVS data (such as Wi-Fi credentials) is encrypted at rest. Dump the flash with `esptool.py read_flash` and confirm the NVS contents are not readable.
 </Card>
 </CardGrid>
 
@@ -1162,11 +1180,15 @@ Enable NVS encryption alongside flash encryption. Generate an NVS encryption key
 <InArticleAd />
 
 
-In this lesson you built a sensor node that updates its own firmware over Wi-Fi. The dual OTA partition scheme keeps the previous working firmware as a fallback, and the `otadata` partition tracks which slot is active. The rollback mechanism uses a self-test pattern: new firmware must prove it works (Wi-Fi connects, sensor reads) before calling `esp_ota_mark_app_valid_cancel_rollback()`. If it fails, the bootloader automatically reverts to the last known good image.
+You built a sensor node that updates its own firmware over Wi-Fi.
 
-You also learned the two pillars of ESP32 hardware security. Flash encryption (AES-256) prevents anyone from reading firmware off the flash chip, protecting credentials and intellectual property. Secure boot v2 (RSA-PSS) ensures only firmware signed with your private key can execute. Both features rely on eFuses, which are one-time programmable, so always use development mode during prototyping. Production mode is irreversible.
+- Two OTA slots mean the earlier firmware is still in flash when a new one arrives, and `otadata` records which slot the bootloader starts.
+- A correct hash proves only that the image arrived whole. New firmware starts on trial and must pass its own self-test (Wi-Fi connects, the sensor reads) before it calls `esp_ota_mark_app_valid_cancel_rollback()`. If it resets first, the bootloader goes back to the earlier image.
+- Flash encryption (AES-256) stops anyone from reading the firmware and the passwords in it from the flash chip.
+- Secure boot v2 (RSA-PSS) lets the chip run only firmware signed with your private key. Keep that key safe and backed up.
+- Both use eFuses, which cannot be cleared. Use flash encryption in development mode while you learn, and enable secure boot only on a board you can give to it. Production mode and secure boot cannot be undone.
 
-The key takeaway: OTA and security features are not optional extras for production devices. A device without OTA cannot receive bug fixes after deployment. A device without secure boot and flash encryption can be cloned, reverse-engineered, or loaded with malicious firmware by anyone with physical access. ESP-IDF makes all of these features available through `menuconfig` and a handful of API calls, so there is no reason to ship without them.
+A device in the field with no OTA cannot receive a repair, and one with no secure boot and no flash encryption can be copied or loaded with other firmware by anyone who holds it.
 
 <EmbeddedProgrammingEsp32Comments />
 

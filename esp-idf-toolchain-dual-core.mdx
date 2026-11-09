@@ -23,21 +23,15 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 
 
-import ModeSelector from '../../../../components/learning/ModeSelector.astro';
-import Mode from '../../../../components/learning/Mode.astro';
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-On a single-core MCU, a smooth animation stutters every time you stop to check for user input, and blocking on serial input freezes the display. The ESP32 sidesteps this entirely with two Xtensa LX6 cores running FreeRTOS SMP, so one core can animate while the other listens for commands without either task stalling the other. In this first lesson you will install ESP-IDF, learn how menuconfig and partition tables shape your firmware, and build an RGB mood lamp that splits color animations and serial command handling across both cores. #ESP32 #ESPIDF #DualCore
-
-<ModeSelector />
-
-<Mode only="overview">
+A lamp fades through its colors, and each time you type a command the fade stops for a moment. The cause is a chip with one processor core: while it waits for your keys, it cannot draw the next color. The ESP32 has two cores and a small operating system, FreeRTOS, that gives each core its own work, so one core animates while the other listens. In this lesson you install ESP-IDF, the official programming tools for the ESP32, learn what its settings menu and its flash memory map do, and build an RGB mood lamp that runs the animation on one core and the command reader on the other. #ESP32 #ESPIDF #DualCore
 
 ## What You Will Learn
 
-The ESP32 is a small, inexpensive computer chip with two processor cores, Wi-Fi, and Bluetooth built in. Unlike simpler microcontrollers that can only do one thing at a time, the ESP32 can run two tasks simultaneously, one on each core.
+The ESP32 is a small, inexpensive chip with two processor cores, Wi-Fi and Bluetooth. A simpler microcontroller does one thing at a time; the ESP32 can run two tasks at once, one on each core.
 
-In this lesson you will set up the programming tools (called ESP-IDF) and build an RGB mood lamp. One core runs a smooth color animation on an LED while the other core listens for your typed commands ("red", "rainbow", "pulse"). Neither core has to wait for the other, so the animation never stutters and your commands are always heard instantly.
+You set up its programming tools (ESP-IDF) and build an RGB mood lamp. One core animates the LED while the other listens for your typed commands ("red", "rainbow", "pulse"). Neither core waits for the other, so the animation never stutters and every command is heard at once.
 
 ```text
  How the mood lamp works:
@@ -51,35 +45,16 @@ In this lesson you will set up the programming tools (called ESP-IDF) and build 
  └──────────────┘         └──────────────┘
 ```
 
-The wiring diagram and parts list are below. Switch to **Explained** to see the full implementation with code, or **Advanced** for the engineering details behind the design choices.
-
-</Mode>
-
-<Mode min="explained">
-
 ## What We Are Building
 
 <InArticleAd />
 
 
 <Card title="RGB Mood Lamp" icon="star">
-A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS system tasks and serial command parsing, while Core 1 runs continuous HSV color animations on an RGB LED using LEDC PWM. Send commands like "red", "rainbow", or "pulse" over the serial monitor to switch modes instantly.
+A mood lamp that you control by typing over the USB serial link. Core 0 reads your commands. Core 1 animates an RGB LED, which it dims with PWM (pulse width modulation): the pin switches on and off thousands of times a second, and the fraction of time it is on sets the brightness.
 </Card>
 
-**Project specifications:**
-
-| Parameter | Value |
-|-----------|-------|
-| MCU | ESP32-WROOM-32 (dual-core Xtensa LX6, 240 MHz) |
-| Framework | ESP-IDF v5.x |
-| LED Output | Common-cathode RGB LED, 3 GPIOs via LEDC PWM |
-| Control | Serial (UART0, 115200 baud) |
-| Core 0 Task | Serial command parser, FreeRTOS system tasks |
-| Core 1 Task | HSV color animation loop (rainbow, pulse, solid) |
-| Current-Limiting Resistors | 3x 220 ohm (one per color channel) |
-| Power | USB (5V from DevKitC) |
-
-</Mode>
+The firmware is written for ESP-IDF v5.x. The board is powered by USB, and the serial link runs at 115200 baud.
 
 ### Bill of Materials
 
@@ -91,12 +66,12 @@ A color-cycling mood lamp controlled over serial. Core 0 handles the FreeRTOS sy
 | | Breadboard + jumper wires | 1 set | |
 | | USB cable (Micro-B or Type-C) | 1 | Depends on DevKitC version |
 
-<Mode min="explained">
-
 ## Installing ESP-IDF
 
 <InArticleAd />
 
+
+ESP-IDF is three things: a compiler for the ESP32's Xtensa processor, the libraries for the chip's hardware, and one command, `idf.py`, that builds and loads your program. Each new terminal must run the export script so that it can find these tools.
 
 <Tabs>
 <TabItem label="Linux (Ubuntu/Debian)">
@@ -179,7 +154,7 @@ The installer creates a desktop shortcut for the ESP-IDF PowerShell and Command 
 
 ### USB Serial Driver
 
-Most ESP32 DevKitC boards use a CP2102 or CH340 USB-to-serial chip. On Linux, add your user to the `dialout` group so you can access serial ports without root:
+Your computer talks to the board through a small USB-to-serial chip on it, most often a CP2102 or a CH340. On Linux, add your user to the `dialout` group, or every flash command fails with "permission denied":
 
 ```bash
 sudo usermod -aG dialout $USER
@@ -193,7 +168,7 @@ On macOS and Windows, install the appropriate driver from the chip manufacturer 
 <InArticleAd />
 
 
-Every ESP-IDF project follows a component-based structure. The build system (CMake + Ninja) finds components by scanning directories and linking them automatically.
+An ESP-IDF project is a set of components. A component is a folder of source code with its own small build file, `CMakeLists.txt`. The build system finds each component by its build file and joins them into one program, so you never list library paths by hand.
 
 <FileTree>
 - rgb-mood-lamp/
@@ -223,20 +198,20 @@ idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS ".")
 ```
 
-ESP-IDF treats every directory with a `CMakeLists.txt` calling `idf_component_register()` as a component. The `main` component is special: it is always included and serves as the application entry point. You can add more components by creating subdirectories under a `components/` folder at the project root.
+The `main` component is special: it is always included, and it holds `app_main()`, the function where your program starts. You add more components as folders under `components/` at the project root.
 
 ## Menuconfig
 
 <InArticleAd />
 
 
-ESP-IDF uses Kconfig (borrowed from the Linux kernel) to manage build-time configuration. Every driver, protocol stack, and system setting exposes options through this system, and all choices are saved into a single `sdkconfig` file.
+ESP-IDF has hundreds of settings: the flash size, the processor speed, which drivers to include. All of them sit in one menu, and your choices are saved in one file, `sdkconfig`. They are fixed when you build.
 
 ```bash
 idf.py menuconfig
 ```
 
-This opens a terminal-based menu. Key settings to know:
+This opens a menu in the terminal. The settings you meet first:
 
 | Menu Path | Setting | Typical Value |
 |-----------|---------|---------------|
@@ -246,22 +221,23 @@ This opens a terminal-based menu. Key settings to know:
 | Component config > FreeRTOS | Tick rate (Hz) | 1000 |
 | Component config > ESP System Settings | Main task stack size | 3584 |
 
-When you change a setting, menuconfig writes the result into `sdkconfig`. This file is auto-generated and should generally not be edited by hand. If you want to set defaults for version control, put your overrides into `sdkconfig.defaults` instead. The build system reads `sdkconfig.defaults` first, then applies any existing `sdkconfig` on top.
+The tick rate is how often FreeRTOS decides which task runs next. The stack size is the working memory of one task, in bytes.
 
-<Mode min="advanced">
-The distinction between `sdkconfig` and `sdkconfig.defaults` matters for teams. `sdkconfig` is machine-specific and should go in `.gitignore`. `sdkconfig.defaults` goes into version control and holds only your intentional overrides. When a teammate clones the repo, ESP-IDF generates a fresh `sdkconfig` from the defaults. The [HTTP Server lesson](/education/embedded-programming-esp32/http-server-rest-api/) shows how to define custom Kconfig menu entries for your own application settings, not just system configuration.
-</Mode>
+Menuconfig writes `sdkconfig` for you, so do not edit that file by hand. To keep a setting in version control, write it in `sdkconfig.defaults`. The build reads `sdkconfig.defaults` first and then applies any existing `sdkconfig` over it.
+
+The two files matter in a team. `sdkconfig` belongs to one machine and goes in `.gitignore`. `sdkconfig.defaults` goes into version control and holds only the settings you chose to change. When a teammate clones the repository, ESP-IDF makes a new `sdkconfig` from the defaults. The [HTTP Server lesson](/education/embedded-programming-esp32/http-server-rest-api/) shows how to add menu entries for your own application settings.
 
 ## Partition Table
 
 <InArticleAd />
 
 
-The ESP32's flash is divided into partitions. The partition table itself lives at offset 0x8000 and tells the bootloader where to find the application firmware, NVS storage, and any other data regions.
+The flash chip is one long strip of memory shared, without overlap, by the bootloader (the small program that runs first and starts yours), your program and saved data. The partition table is the map. It sits at address 0x8000 and gives each region a name, a start address and a size.
+
+Two regions appear in every project. NVS (non-volatile storage) holds small saved values, such as a Wi-Fi password, that must remain when power is removed. The factory app is your program.
 
 ```text
- ESP32 Flash Memory Layout (4 MB)
- ┌──────────────────────────────┐ 0x000000
+ ┌──────────────────────────────┐ 0x001000
  │  Bootloader (2nd stage)      │
  ├──────────────────────────────┤ 0x008000
  │  Partition Table             │
@@ -278,16 +254,9 @@ The ESP32's flash is divided into partitions. The partition table itself lives a
  └──────────────────────────────┘ 0x400000
 ```
 
-The default "Single factory app, no OTA" partition table looks like this:
+This is the default table, named "Single factory app, no OTA". OTA means over the air: a firmware update sent through the network. Note that the program gets 1 MB, not the full 4 MB of the chip. A program larger than its partition does not build, however much flash is free after it.
 
-| Name | Type | SubType | Offset | Size |
-|------|------|---------|--------|------|
-| nvs | data | nvs | 0x9000 | 24 KB |
-| phy_init | data | phy | 0xf000 | 4 KB |
-| factory | app | factory | 0x10000 | 1 MB |
-
-<Mode min="advanced">
-For projects that need OTA updates or filesystem storage, you create a custom `partitions.csv`:
+For a project that needs OTA updates or a file system, you write your own `partitions.csv`:
 
 ```csv
 # Name,   Type, SubType, Offset,  Size, Flags
@@ -303,40 +272,36 @@ Then select "Custom partition table CSV" in menuconfig and point it to your file
 idf.py partition-table
 ```
 
-This prints the parsed table with offsets and sizes, which is useful for verifying that partitions do not overlap. You will use custom partition tables in [Lesson 8: OTA Updates](/education/embedded-programming-esp32/ota-updates-secure-boot/), where the flash needs two application slots for safe firmware updates.
-</Mode>
+This prints the table with its addresses and sizes, so you can check that no two partitions overlap. You write a custom table again for [OTA updates](/education/embedded-programming-esp32/ota-updates-secure-boot/), where the flash holds two copies of the program so that a failed update can fall back to the old one.
 
 ## Dual-Core Architecture
 
 <InArticleAd />
 
 
-The ESP32 contains two Xtensa LX6 cores running at up to 240 MHz. Espressif names them PRO_CPU (core 0) and APP_CPU (core 1). ESP-IDF runs a symmetric multiprocessing (SMP) variant of FreeRTOS across both cores, meaning any task can run on either core unless you explicitly pin it.
+The ESP32 contains two processor cores of the Xtensa LX6 type, each running at up to 240 MHz. Espressif names them PRO_CPU (core 0) and APP_CPU (core 1).
+
+In FreeRTOS your program is a set of tasks. A task is a function with its own loop and its own stack, and the scheduler decides which task runs at each moment. Think of two cooks (the cores) who take orders (the tasks) from one board. Either cook takes any order, unless it carries a cook's name. That is symmetric multiprocessing (SMP): one FreeRTOS, one memory, two cores, and a task runs on either core unless you pin it to one. Where the picture stops being true: a pinned task waits for its own core, even when the other core has nothing to do.
 
 ```text
- ESP32 Dual-Core Architecture
- ┌─────────────────────────────────────────┐
- │              Shared Bus                 │
- │  ┌───────────┐       ┌───────────┐     │
- │  │ PRO_CPU   │       │ APP_CPU   │     │
- │  │ (Core 0)  │       │ (Core 1)  │     │
- │  │ Xtensa LX6│       │ Xtensa LX6│     │
- │  │ 240 MHz   │       │ 240 MHz   │     │
- │  └─────┬─────┘       └─────┬─────┘     │
- │        │    ┌─────────┐    │           │
- │        └────┤ FreeRTOS├────┘           │
- │             │   SMP   │                │
- │             └────┬────┘                │
- │  ┌───────┐ ┌────┴────┐ ┌───────────┐  │
- │  │ SRAM  │ │ ROM     │ │ Peripherals│  │
- │  │ 520KB │ │ 448KB   │ │ GPIO,SPI..│  │
- │  └───────┘ └─────────┘ └───────────┘  │
- └─────────────────────────────────────────┘
+ ┌───────────────┐       ┌───────────────┐
+ │ PRO_CPU       │       │ APP_CPU       │
+ │ core 0        │       │ core 1        │
+ └───────┬───────┘       └───────┬───────┘
+         │   ┌───────────────┐   │
+         └───┤ one FreeRTOS, ├───┘
+             │ one task list │
+             └───────┬───────┘
+ ┌───────────────────┴───────────────────┐
+ │ shared: 520 KB RAM, GPIO, timers, ... │
+ └───────────────────────────────────────┘
 ```
+
+Both cores see the same memory, so two tasks can write one variable at the same moment. This is why the lamp passes its commands through a queue.
 
 ### How Boot and System Tasks Are Distributed
 
-At startup, the bootloader runs on PRO_CPU. After initialization, ESP-IDF creates several system tasks:
+At startup ESP-IDF also creates tasks of its own, most of them on core 0:
 
 | Task | Core | Purpose |
 |------|------|---------|
@@ -347,11 +312,11 @@ At startup, the bootloader runs on PRO_CPU. After initialization, ESP-IDF create
 | Wi-Fi task | PRO_CPU (0) | Wi-Fi protocol stack |
 | ipc0, ipc1 | 0, 1 | Inter-processor call tasks |
 
-The `app_main()` function runs as a FreeRTOS task on core 0 with a default stack of 3584 bytes. You can create additional tasks and pin them to specific cores or leave them floating.
+An idle task runs when its core has nothing else to do. The `app_main()` function is itself a task on core 0, with a default stack of 3584 bytes. From it you create your own tasks.
 
 ### Task Creation and Core Pinning
 
-The standard FreeRTOS `xTaskCreate()` function lets the scheduler place the task on any available core. To pin a task to a specific core, use the ESP-IDF extension:
+The standard FreeRTOS `xTaskCreate()` lets the scheduler put the task on either core. To pin a task, use the ESP-IDF version, which takes the core number as its last argument:
 
 ```c
 #include "freertos/FreeRTOS.h"
@@ -377,28 +342,37 @@ void app_main(void) {
 }
 ```
 
-Pass `tskNO_AFFINITY` as the last argument to let the scheduler decide which core runs the task. This is useful for general-purpose work, but for real-time or peripheral-bound tasks, pinning gives you predictable timing by avoiding contention with system tasks on core 0.
+Pass `tskNO_AFFINITY` as the last argument to let the scheduler choose the core.
 
 ### When to Pin Tasks
 
-Pin a task when it has strict timing requirements (motor control, audio sampling), when it accesses hardware that is not thread-safe, or when you want to isolate it from Wi-Fi and Bluetooth stack activity on core 0. Leave tasks unpinned when they are not latency-sensitive and can benefit from load balancing.
+Pin a task when:
 
-<Mode min="advanced">
-Espressif chose symmetric multiprocessing (SMP) over asymmetric multiprocessing (AMP). In AMP, each core runs its own OS with separate memory. In SMP, both cores share one FreeRTOS instance and one address space, which simplifies inter-task communication (a shared queue or semaphore is enough) but requires locking when accessing shared data. One practical consequence: ISRs can run on either core by default. If your ISR writes to data that a pinned task reads, you need a spinlock (`portMUX_TYPE`), not just a mutex. The [RTOS Programming course](/education/rtos-programming/) covers synchronization primitives in depth.
+- its timing is strict (motor control, audio sampling), so that it does not wait behind the Wi-Fi and Bluetooth tasks on core 0;
+- it uses hardware that only one task may touch at a time.
 
-In production IoT devices, core 0 typically runs the networking stack (Wi-Fi, BLE, MQTT) while core 1 runs the application control loop. This pattern appears throughout this course: [Lesson 4: Wi-Fi](/education/embedded-programming-esp32/wifi-network-configuration/) and [Lesson 6: MQTT](/education/embedded-programming-esp32/mqtt-cloud-communication/) keep networking on core 0. The [IoT Systems course](/education/iot-systems/) applies the same split to multi-sensor systems where sampling must not be delayed by network retries. In the [Capstone project](/education/embedded-programming-esp32/connected-sensor-network-project/) at the end of this course, you will build a complete sensor network using this architecture.
-</Mode>
+Leave a task unpinned when a short delay does not matter. The scheduler then runs it on whichever core is free.
+
+Espressif chose SMP over asymmetric multiprocessing (AMP), in which each core runs its own operating system with its own memory. With SMP a shared queue is enough to pass data between tasks, but shared data needs a lock.
+
+One consequence: an interrupt handler (ISR) runs on the core that registered it, which may not be the core your task is pinned to. If the ISR writes data that a pinned task reads, a mutex is not enough. Use a spinlock (`portMUX_TYPE`). The [RTOS Programming course](/education/rtos-programming/) covers these locks.
+
+In most connected products, core 0 runs the network tasks (Wi-Fi, Bluetooth, MQTT) and core 1 runs the application's control loop, so that a slow network never delays a measurement. The lessons on [Wi-Fi](/education/embedded-programming-esp32/wifi-network-configuration/) and [MQTT](/education/embedded-programming-esp32/mqtt-cloud-communication/) keep the network on core 0, and the [capstone project](/education/embedded-programming-esp32/connected-sensor-network-project/) builds a sensor network on the same split. The [IoT Systems course](/education/iot-systems/) uses it for systems with many sensors.
 
 ## LEDC PWM for RGB LED
 
 <InArticleAd />
 
 
-The ESP32's LEDC (LED Control) peripheral provides up to 16 independent PWM channels, split between high-speed and low-speed groups. Each channel is driven by a configurable timer. For an RGB LED, we need three channels sharing the same timer so all three colors operate at the same PWM frequency.
+A GPIO pin is only on or off. With PWM it switches faster than the eye can follow, and the eye sees the average. The fraction of each period that the pin is on is the duty cycle.
+
+LEDC (LED Control) is the ESP32 peripheral that makes PWM in hardware. It has up to 16 channels. A timer sets the frequency and the resolution, and each channel connects one pin to a timer with its own duty. The lamp uses three channels on one timer, so the three colors switch at the same frequency.
+
+With the settings below, the frequency is 5 kHz, so one period is 200 µs. The resolution is 8 bits, so the duty is a number from 0 to 255. A duty of 64 keeps the pin on for 64/256 of the period, which is 50 µs.
 
 ### Timer and Channel Configuration
 
-LEDC configuration is a two-step process: configure a timer (sets frequency and resolution), then configure channels (binds a GPIO to that timer with an initial duty cycle).
+Configure the timer first, then the channels:
 
 ```c
 #include "driver/ledc.h"
@@ -455,18 +429,22 @@ void set_rgb(uint8_t r, uint8_t g, uint8_t b) {
 }
 ```
 
-The `ledc_set_duty()` call writes to a shadow register. The value only takes effect when you call `ledc_update_duty()`, which transfers the shadow value to the active register at the next timer overflow. This prevents glitches when updating multiple channels.
+Each color needs two calls. `ledc_set_duty()` only stores the new value in a waiting register. `ledc_update_duty()` makes it active at the start of the next PWM period, so a period is never cut short and the LED does not flicker.
 
-<Mode min="advanced">
-LEDC also supports hardware fading via `ledc_set_fade_with_time()`, which ramps the duty cycle smoothly without CPU involvement. We animate in software here because we need HSV conversion per frame, but for simple brightness transitions or single-color breathing effects, the hardware fader uses zero CPU cycles. The [GPIO and Peripherals lesson](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/) explores additional LEDC features alongside the Pulse Counter and RMT peripherals.
-</Mode>
+LEDC can also fade in hardware with `ledc_set_fade_with_time()`, which changes the duty step by step with no work from the CPU. The lamp animates in software because each frame needs a color conversion. For a plain change of brightness, use the hardware fade. The [GPIO and Peripherals lesson](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/) uses it.
 
 ## HSV to RGB Conversion
 
 <InArticleAd />
 
 
-RGB values are awkward for animations. To cycle smoothly through the color spectrum, it is much easier to work in HSV (Hue, Saturation, Value) space and convert to RGB for output. Hue sweeps through colors (0 = red, 120 = green, 240 = blue), saturation controls how vivid the color is, and value controls brightness.
+To move smoothly through the rainbow in RGB, you must change three numbers together in the right pattern. HSV (hue, saturation, value) describes the same color in a way that suits animation:
+
+- hue is the position on the color circle in degrees (0 = red, 120 = green, 240 = blue);
+- saturation is how strong the color is (0 is white or gray);
+- value is the brightness.
+
+A rainbow is then one number, the hue, counting from 0 to 359. The function below converts each HSV color to the three duty values the LED needs.
 
 ```c
 /* Convert HSV to RGB. h: 0-360, s: 0-255, v: 0-255 */
@@ -496,14 +474,12 @@ void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
 }
 ```
 
-With this function, a rainbow animation is just a loop that increments hue from 0 to 359 and converts each value to RGB. No manual color blending or lookup tables needed.
-
 ## Complete Firmware
 
 <InArticleAd />
 
 
-Here is the complete `main.c` for the RGB mood lamp. Core 1 runs the color animation loop, and core 0 runs a serial command parser. A FreeRTOS queue carries mode-change commands from the parser task to the animation task.
+The complete `main.c`: the animation task runs on core 1, the command task on core 0, and they never share a variable. The command task puts each new mode into a FreeRTOS queue (a short waiting line that two tasks can use safely), and the animation task takes it out.
 
 ```c
 #include <stdio.h>
@@ -514,6 +490,8 @@ Here is the complete `main.c` for the RGB mood lamp. Core 1 runs the color anima
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/ledc.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_log.h"
 
 static const char *TAG = "mood_lamp";
@@ -659,7 +637,7 @@ static void animation_task(void *pvParameters)
                 hsv_to_rgb(hue, 255, 200, &r, &g, &b);
                 set_rgb(r, g, b);
                 hue = (hue + 1) % 360;
-                vTaskDelay(pdMS_TO_TICKS(20));  /* ~18 seconds per full cycle */
+                vTaskDelay(pdMS_TO_TICKS(20));  /* ~7.2 seconds per full cycle */
                 continue;
 
             case MODE_PULSE: {
@@ -750,6 +728,13 @@ void app_main(void)
     /* Create the mode queue (depth 4, each element is a led_mode_t) */
     mode_queue = xQueueCreate(4, sizeof(led_mode_t));
 
+    /* Make stdin block until a full line arrives. Without the UART
+       driver, fgets() returns at once and splits a typed command.
+       (Before ESP-IDF v5.3 the second call was named
+       esp_vfs_dev_uart_use_driver.) */
+    uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0);
+    uart_vfs_dev_use_driver(UART_NUM_0);
+
     /* Create the animation task, pinned to core 1 */
     xTaskCreatePinnedToCore(
         animation_task,
@@ -778,35 +763,18 @@ void app_main(void)
 
 ### How the Code Works
 
-The firmware creates two independent tasks that communicate through a FreeRTOS queue:
+1. `animation_task` on core 1 checks the queue with a timeout of zero, so it never waits there. It sets a fixed color or computes the next frame, then calls `vTaskDelay()`. The delay sets the animation speed and gives the core to other tasks: a loop with no delay would keep core 1 for itself.
 
-1. **`animation_task` (Core 1):** Runs a tight loop that checks for mode changes via `xQueueReceive()` with zero timeout (non-blocking). Depending on the current mode, it either sets a solid color or computes the next animation frame using HSV conversion, then delays briefly before the next update.
+2. `parser_task` on core 0 waits in `fgets()` until a full line arrives. A task that waits uses no processor time. It removes the line ending, converts the text to lower case and compares it with the known commands. A valid command goes into the queue.
 
-2. **`parser_task` (Core 0):** Blocks on `fgets()` waiting for serial input. When a line arrives, it strips whitespace, converts to lowercase, and matches against known commands. Valid commands are sent to the queue where the animation task picks them up.
-
-3. **`app_main()`:** Initializes the LEDC hardware, creates the queue, spawns both tasks, and returns. In ESP-IDF, `app_main()` itself is a FreeRTOS task, so returning from it simply deletes that task. The two pinned tasks continue running.
+3. `app_main()` sets up LEDC, creates the queue, creates both tasks and returns. On a PC, a program ends when `main()` returns. Here `app_main()` is only one task: when it returns, that task is deleted and the two pinned tasks continue.
 
 ## CMakeLists.txt Files
 
 <InArticleAd />
 
 
-### Top-Level CMakeLists.txt
-
-```cmake
-cmake_minimum_required(VERSION 3.16)
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(rgb-mood-lamp)
-```
-
-### main/CMakeLists.txt
-
-```cmake
-idf_component_register(SRCS "main.c"
-                       INCLUDE_DIRS ".")
-```
-
-These two files are all the build system needs. ESP-IDF's CMake integration handles toolchain selection, compiler flags, linker scripts, and partition table generation automatically. If you add more source files, list them in the `SRCS` argument separated by spaces.
+The build needs only the two `CMakeLists.txt` files shown under the project structure above. If you add source files, list them in `SRCS`, separated by spaces.
 
 ## Building and Flashing
 
@@ -826,13 +794,13 @@ These two files are all the build system needs. ESP-IDF's CMake integration hand
    cd rgb-mood-lamp
    idf.py set-target esp32
    ```
-   This configures the build system for the ESP32 (as opposed to ESP32-S2, ESP32-C3, etc.) and generates an initial `sdkconfig`.
+   This selects the ESP32 (not the ESP32-S2, ESP32-C3 or others) and makes a first `sdkconfig`.
 
 3. Build the project:
    ```bash
    idf.py build
    ```
-   The first build takes a few minutes because it compiles the entire ESP-IDF framework. Subsequent builds are incremental and much faster.
+   The first build takes a few minutes: it compiles all of ESP-IDF. Later builds compile only what changed, so they are much faster.
 
 4. Connect the ESP32 DevKitC via USB and flash:
    ```bash
@@ -840,12 +808,10 @@ These two files are all the build system needs. ESP-IDF's CMake integration hand
    ```
    On macOS, the port is usually `/dev/cu.usbserial-XXXX` or `/dev/cu.SLAB_USBtoUART`. On Windows, use `COM3` or whichever port appears in Device Manager.
 
-5. The serial monitor opens automatically at 115200 baud. You should see the startup log followed by the prompt. Type `rainbow`, `red`, `pulse`, or any other command and press Enter.
+5. The serial monitor opens at 115200 baud and shows the startup log, then the prompt. Type `rainbow`, `red`, `pulse` or another command and press Enter.
 
 6. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
-
-</Mode>
 
 ### Wiring the RGB LED
 
@@ -861,36 +827,33 @@ These two files are all the build system needs. ESP-IDF's CMake integration hand
        └──────┤├──────┘
 ```
 
-Connect the common-cathode RGB LED to the ESP32 DevKitC:
+A common-cathode RGB LED is three LEDs in one case that share their negative pin. The longest pin is the common cathode and goes to GND. The red, green and blue pins go to GPIO 25, 26 and 27, each through its own 220 ohm resistor.
 
-| LED Pin | Connection |
-|---------|------------|
-| Red anode | GPIO 25 through 220 ohm resistor |
-| Green anode | GPIO 26 through 220 ohm resistor |
-| Blue anode | GPIO 27 through 220 ohm resistor |
-| Common cathode | GND |
-
-Each resistor limits current to a safe level for both the LED and the ESP32 GPIO (which can source up to 40 mA per pin, though 12 mA is the recommended maximum for continuous use).
+The resistor limits the current, which protects the LED and the pin. The pin gives 3.3 V and a red LED keeps about 2.0 V, so 1.3 V is left across 220 ohm: about 6 mA. That is below the 12 mA recommended for an ESP32 pin.
 
 ## Exercises
 
 <InArticleAd />
 
 
-1. **Add a "breathe" mode.** Implement a new `MODE_BREATHE` that holds a single color (for example, warm white at hue 30) and slowly ramps brightness from 0 to 255 and back using the value parameter in HSV. Use a step delay of about 15 ms for a smooth 8-second breathing cycle.
+1. **Add a "breathe" mode.** Add `MODE_BREATHE`: hold one color (for example warm white, hue 30) and ramp the HSV value from 0 to 255 and back. A step delay of about 15 ms gives a smooth breath of about 8 seconds.
 
-2. **Add speed control commands.** Accept "fast" and "slow" commands that change the animation delay. Store the delay in a shared variable protected by a mutex, or send it through a second queue. "fast" should halve the current delay, and "slow" should double it, clamped between 5 ms and 100 ms.
+2. **Add speed control commands.** "fast" halves the animation delay and "slow" doubles it, limited to 5 ms to 100 ms. Keep the delay in a shared variable protected by a mutex, or send it through a second queue.
 
-3. **Print mode and core info on each change.** In the animation task, print the new mode name, the current core ID (`xPortGetCoreID()`), and the current tick count (`xTaskGetTickCount()`) every time a mode change is received. This helps verify that tasks are actually running on their pinned cores.
+3. **Print mode and core info on each change.** When the animation task receives a new mode, print the mode name, the core ID (`xPortGetCoreID()`) and the tick count (`xTaskGetTickCount()`). This shows that each task really runs on its pinned core.
 
-4. **Add a "status" command.** When the user types "status", print the free heap size (`esp_get_free_heap_size()`), the number of running tasks (`uxTaskGetNumberOfTasks()`), and the system uptime in seconds (`esp_timer_get_time() / 1000000`). This exercises the ESP-IDF system API without affecting the animation loop.
+4. **Add a "status" command.** On "status", print the free heap (`esp_get_free_heap_size()`), the number of tasks (`uxTaskGetNumberOfTasks()`) and the uptime in seconds (`esp_timer_get_time() / 1000000`). It uses the ESP-IDF system functions and does not touch the animation loop.
 
 ## Summary
 
 <InArticleAd />
 
 
-You installed ESP-IDF v5.x and set up the Xtensa toolchain. You learned how menuconfig stores build-time configuration in `sdkconfig`, how the partition table divides flash into regions, and how the ESP32's two Xtensa LX6 cores run FreeRTOS SMP. You built an RGB mood lamp that pins a color animation task to core 1 and a serial command parser to core 0, communicating through a FreeRTOS queue. The LEDC peripheral handles PWM generation for all three color channels, and HSV conversion provides smooth color cycling without manual blending.
+- ESP-IDF is the compiler, the libraries and `idf.py`. Menuconfig saves the build settings in `sdkconfig`.
+- The partition table is the map of the flash. A program must fit its own partition.
+- The two cores share one FreeRTOS and one memory. A task runs on either core unless you pin it, and a pinned task waits for its own core.
+- Tasks on different cores pass data through a queue, not through a shared variable.
+- LEDC makes PWM in hardware: a timer sets the frequency and resolution, and each channel has its own duty.
 
 <EmbeddedProgrammingEsp32Comments />
 

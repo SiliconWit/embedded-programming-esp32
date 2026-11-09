@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Turning an ESP32 into a web server means any device with a browser becomes your control panel. In this lesson you will build a thermostat you can operate from your phone or laptop: set a target temperature, see live readings from a DHT22 sensor, and watch the relay click on and off as the system maintains your setpoint. The firmware runs an HTTP server with clean REST endpoints, parses JSON, and serves a responsive UI from the SPIFFS filesystem. Type `thermostat.local` in your browser and you are connected, no IP address needed. #ESP32 #HTTPServer #IoT
+A heater with only a dial on the wall tells you nothing. To know the room temperature, or to change the target, somebody must walk to it. A display and buttons cost parts, and a phone app must be installed by every user. A small web server inside the device avoids all of this: any phone or laptop on the same network becomes the control panel. In this lesson you build a thermostat that reads a temperature sensor, switches a relay, and serves its own web page at `thermostat.local`. The thermostat decides by itself, in its firmware. The page only shows what it does and changes its target. #ESP32 #HTTPServer #IoT
 
 ## What We Are Building
 
 <Card title="Browser-Controlled Thermostat" icon="star">
-A complete thermostat system with a web interface. The ESP32 reads temperature and humidity from a DHT22 sensor, compares against a user-defined setpoint, and drives a relay to control a heater or fan. The web UI displays live readings, lets you adjust the setpoint, toggle manual override, and view a recent history chart. REST API endpoints allow integration with other tools or scripts.
+A thermostat with a web page. The ESP32 reads temperature and humidity from a DHT22 sensor, compares the temperature with the setpoint (the target you choose), and switches a relay that controls a heater. The page shows the live readings and lets you change the setpoint or force the relay on or off. The same functions are open to scripts through a REST API: a small set of web addresses that answer with data in place of pages.
 </Card>
 
 **Project specifications:**
@@ -52,7 +52,7 @@ A complete thermostat system with a web interface. The ESP32 reads temperature a
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from previous lessons |
+| U1 | ESP32 DevKitC | 1 | The board you used for the earlier projects |
 | S1 | DHT22 temperature/humidity sensor | 1 | 3.3V compatible, with pull-up resistor |
 | K1 | 5V relay module (1-channel) | 1 | Opto-isolated preferred |
 | R1 | 4.7k ohm resistor | 1 | DHT22 data line pull-up |
@@ -64,7 +64,6 @@ A complete thermostat system with a web interface. The ESP32 reads temperature a
 
 
 ```text
- Thermostat Circuit
  ┌──────────────┐
  │   ESP32      │
  │         GP4  ├──┬──[R1 4.7K]── 3.3V
@@ -82,30 +81,26 @@ A complete thermostat system with a web interface. The ESP32 reads temperature a
  └──────┤├──────┘      (mDNS, port 80)
 ```
 
-Connect the components on a breadboard as follows:
+The DHT22 has four pins. With the grille facing you, from left to right: VCC, Data, NC (not connected) and GND. Put the 4.7k resistor between Data and 3.3 V. The sensor and the ESP32 only ever pull this line low, and the resistor pulls it high again. Without it the readings fail.
 
-| ESP32 Pin | Component | Notes |
-|-----------|-----------|-------|
-| GPIO 4 | DHT22 data pin | With 4.7k pull-up to 3.3V |
-| GPIO 5 | Relay module IN pin | Active low on most modules |
-| 3.3V | DHT22 VCC, relay module VCC logic | Power supply |
-| 5V (VBUS) | Relay module VCC (coil side) | From USB 5V |
-| GND | DHT22 GND, relay module GND | Common ground |
+A relay is a switch moved by an electromagnet (the coil). Most relay modules accept the 3.3 V signal of the ESP32 on the IN pin but need 5 V for the coil. The DevKitC gives 5 V on its VBUS pin when it is powered by USB. If your module has separate VCC and JD-VCC pins, connect VCC to 3.3 V and JD-VCC to 5 V. The output terminals (COM, NO, NC) are the switch contacts.
 
-The DHT22 has four pins (left to right, with the grille facing you): VCC, Data, NC (not connected), and GND. Place the 4.7k pull-up resistor between the Data pin and VCC (3.3V). Without this pull-up, the one-wire protocol will produce unreliable readings.
-
-For the relay module, most opto-isolated boards accept a 3.3V logic input on the IN pin but need 5V for the relay coil. The ESP32 DevKitC provides 5V on the VBUS pin when powered over USB. If your relay module has separate VCC and JD-VCC headers, connect VCC to 3.3V and JD-VCC to 5V. The relay output terminals (COM, NO, NC) connect to whatever load you want to switch. For testing, you can simply listen for the relay click or connect an LED across COM and NO with a current-limiting resistor.
+:::caution[Test with a low voltage load]
+For this lesson, listen for the click of the relay, or switch an LED with its resistor from a low voltage supply. Connecting a mains heater to the relay is work for a licensed electrician, and a breadboard relay module is not built for it.
+:::
 
 ## ESP-IDF HTTP Server
 
 <InArticleAd />
 
 
-The ESP-IDF includes a lightweight HTTP server component (`esp_http_server`) that runs as a FreeRTOS task. It handles connection management, request parsing, and response buffering so you can focus on writing handler functions. The server supports GET, POST, PUT, DELETE, and other methods, and can serve multiple clients simultaneously.
+HTTP is the language of browsers and web servers: the browser sends a request that names a method and an address, and the server sends back a response. Two methods are enough here: GET asks for something, and POST sends data to change something. The address after the host name, such as `/api/status`, is the URI.
+
+ESP-IDF's small HTTP server, `esp_http_server`, runs as a FreeRTOS task, accepts the connections and reads the requests. You write one handler function for each method and URI you want to answer.
 
 ### Starting the Server
 
-The `httpd_start()` function creates and starts the server. You pass a configuration structure that controls the port, stack size, maximum number of connections, and other parameters:
+`httpd_start()` creates the server from a configuration structure:
 
 ```c
 #include "esp_http_server.h"
@@ -127,11 +122,11 @@ static httpd_handle_t start_webserver(void)
 }
 ```
 
-The `HTTPD_DEFAULT_CONFIG()` macro sets sensible defaults: port 80, maximum 7 URI handlers, and 4 simultaneous connections. We override `uri_match_fn` with `httpd_uri_match_wildcard` so we can use wildcard patterns like `/static/*` for serving files.
+`HTTPD_DEFAULT_CONFIG()` gives port 80, at most 8 URI handlers and 7 connections at once. Setting `uri_match_fn` to `httpd_uri_match_wildcard` allows a pattern with `*`, such as `/static/*`, to match many addresses. The file handler needs this.
 
 ### Registering URI Handlers
 
-Each endpoint is defined by an `httpd_uri_t` structure that specifies the URI pattern, HTTP method, handler function, and optional user context:
+An endpoint is one method and URI that the server answers. Each is described by an `httpd_uri_t` structure:
 
 ```c
 static esp_err_t status_get_handler(httpd_req_t *req)
@@ -153,11 +148,11 @@ httpd_uri_t status_uri = {
 httpd_register_uri_handler(server, &status_uri);
 ```
 
-The handler receives an `httpd_req_t` pointer that carries the request details. You set the content type with `httpd_resp_set_type()`, then send the response body with `httpd_resp_sendstr()` (for strings) or `httpd_resp_send()` (for binary data with an explicit length). The server automatically adds the HTTP status line and headers.
+The handler receives the request as an `httpd_req_t` pointer. It sets the content type with `httpd_resp_set_type()` and sends the body with `httpd_resp_sendstr()` for text or `httpd_resp_send()` for data of a given length. The server adds the status line and the headers.
 
 ### Reading POST Request Bodies
 
-For POST handlers, you read the request body using `httpd_req_recv()`. The body is not automatically buffered, so you must allocate a buffer and read into it:
+A POST request carries data in its body. The server does not read the body for you. The handler reads it into its own buffer with `httpd_req_recv()`:
 
 ```c
 static esp_err_t setpoint_post_handler(httpd_req_t *req)
@@ -178,15 +173,16 @@ static esp_err_t setpoint_post_handler(httpd_req_t *req)
 }
 ```
 
-The `httpd_req_recv()` function returns the number of bytes read, 0 if the connection closed, or a negative value on error. Always null-terminate the buffer before passing it to a string parser.
+`httpd_req_recv()` returns the number of bytes read, 0 if the connection closed, or a negative value on error. The body is not a C string: put a zero byte at its end before passing it to a function that expects one. Never trust the body: anyone on the network can send anything, so limit the length and check every value.
 
 ## REST API Design
 
 <InArticleAd />
 
 
+REST is a plain agreement about how to use HTTP for data: an address names a thing, GET reads it, and POST changes it. A program can then use the device as easily as a person uses the page.
+
 ```text
- Browser-to-ESP32 Request Flow
  ┌──────────┐  HTTP GET /api/status  ┌──────────┐
  │ Browser  ├───────────────────────>│  ESP32   │
  │          │                        │ HTTP Srv │
@@ -200,7 +196,7 @@ The `httpd_req_recv()` function returns the number of bytes read, 0 if the conne
   thermostat.local                   (mDNS)
 ```
 
-The thermostat exposes three endpoints. All communication uses JSON:
+The thermostat has three endpoints. All data is JSON, a text format of names and values inside braces:
 
 | Method | URI | Purpose | Request Body | Response Body |
 |--------|-----|---------|-------------|---------------|
@@ -210,28 +206,28 @@ The thermostat exposes three endpoints. All communication uses JSON:
 
 ### Operating Modes
 
-The thermostat supports three modes:
+The thermostat has three modes:
 
-- **auto:** The thermostat compares the current temperature against the setpoint and drives the relay automatically with hysteresis. This is the default mode.
-- **manual_on:** The relay is forced on regardless of temperature. Useful for testing or overriding the thermostat logic.
-- **manual_off:** The relay is forced off. Useful for shutting down the heater without changing the setpoint.
+- `auto`, the default: the firmware compares the temperature with the setpoint and switches the relay.
+- `manual_on`: the relay is on whatever the temperature. In this mode nothing limits the temperature, so use it for tests only.
+- `manual_off`: the relay is off. The setpoint is kept.
 
 ### CORS Headers
 
-If you open the web UI from a different origin (for example, during development on a desktop), the browser will block fetch() requests unless the server sends CORS headers. We add them to every response by setting a custom `httpd_resp_set_hdr()` call in each handler:
+A browser blocks a page loaded from one server from sending requests to another, unless the second server permits it. While you develop, a page opened from a file on your computer is blocked from the ESP32. The server permits it with a CORS header on each response:
 
 ```c
 httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 ```
 
-For a production system you would restrict this to specific origins, but for a local IoT device the wildcard is acceptable.
+The `*` permits pages from anywhere. That is acceptable on a bench. This API also has no login: anyone on the same network can change the setpoint. A product must name the permitted origins and ask for a password.
 
 ## JSON with cJSON
 
 <InArticleAd />
 
 
-The ESP-IDF bundles the cJSON library, so you do not need to add any external dependencies. cJSON provides a simple API for building and parsing JSON objects.
+Building JSON text by hand with `snprintf` works for one value and breaks with the first forgotten quote. ESP-IDF includes the cJSON library, which builds JSON from values and parses JSON back into values.
 
 ### Building a JSON Response
 
@@ -256,7 +252,7 @@ static char *build_status_json(float temp, float humidity,
 }
 ```
 
-`cJSON_PrintUnformatted()` returns a compact JSON string without whitespace. Use `cJSON_Print()` for pretty-printed output (useful during debugging but wasteful over the network). The returned string is heap-allocated, so you must call `free()` on it after sending.
+`cJSON_PrintUnformatted()` returns the JSON as one compact string (`cJSON_Print()` adds spaces and line breaks for human readers). The string is new memory: call `free()` on it after sending, and `cJSON_Delete()` on the object. Forget, and each request loses a little memory until, after some hours, none is left.
 
 ### Parsing a JSON Request
 
@@ -279,18 +275,18 @@ static float parse_setpoint(const char *json_str)
 }
 ```
 
-Always check `cJSON_IsNumber()`, `cJSON_IsString()`, or `cJSON_IsBool()` before accessing the value fields. If the key is missing or the wrong type, these checks return false and you can send back an error response.
+Check the type with `cJSON_IsNumber()`, `cJSON_IsString()` or `cJSON_IsBool()` before you use a value. If the name is missing or the type is wrong, the check is false: send an error response and change nothing.
 
 ## SPIFFS Filesystem
 
 <InArticleAd />
 
 
-SPIFFS (SPI Flash File System) is a lightweight filesystem designed for NOR flash. The ESP-IDF includes full SPIFFS support, and we will use it to store the HTML, CSS, and JavaScript files that make up the web UI. This separates the UI from the firmware binary, so you can update the web interface without recompiling the C code.
+The web page is a file that must live somewhere. HTML inside a C string means a new firmware build for every change to the page. SPIFFS (SPI Flash File System) is a small file system in its own flash partition: the page is an ordinary file there, which you can replace without touching the C code.
 
 ### Partition Table
 
-You need a custom partition table that includes a SPIFFS partition. Create a file called `partitions.csv` in your project root:
+The default partition table has no place for files, so the project needs its own. Create `partitions.csv` in the project root:
 
 ```
 # Name,   Type, SubType,  Offset,   Size
@@ -300,9 +296,9 @@ factory,   app,  factory, 0x10000,  0x180000
 storage,   data, spiffs,  0x190000, 0x70000
 ```
 
-The `storage` partition gets 448 KB of flash, which is more than enough for a simple web UI. The factory app partition gets 1.5 MB. These sizes work on the standard 4 MB flash found on most ESP32 DevKitC boards.
+The program gets 0x180000 bytes (1.5 MB) from 0x10000, so it ends at 0x190000, exactly where `storage` begins. `storage` is 0x70000 bytes (448 KB). You need these two numbers again when you write the file image to the flash.
 
-Tell the build system to use this partition table by running `idf.py menuconfig` and setting:
+Select this table in `idf.py menuconfig`:
 - **Partition Table** > **Partition Table** > **Custom partition table CSV**
 - **Partition Table** > **Custom partition CSV file** > `partitions.csv`
 
@@ -342,11 +338,11 @@ static esp_err_t init_spiffs(void)
 }
 ```
 
-After mounting, files are accessible through standard C functions like `fopen()`, `fread()`, and `fclose()` under the `/spiffs/` path. For example, `/spiffs/index.html` maps to a file called `index.html` in the SPIFFS image.
+Mounting connects the partition to a path. After it, the standard C functions `fopen()`, `fread()` and `fclose()` work on files under `/spiffs/`, so `/spiffs/index.html` is the file `index.html` in the partition.
 
 ### Serving Static Files
 
-The HTTP server handler for static files reads from SPIFFS and streams the content to the client:
+A static file is one that is sent as it is. This handler opens the file and sends it in pieces:
 
 ```c
 static esp_err_t static_file_handler(httpd_req_t *req)
@@ -391,14 +387,14 @@ static esp_err_t static_file_handler(httpd_req_t *req)
 }
 ```
 
-We register this handler with a wildcard pattern so it catches all URIs that do not match an API endpoint. The wildcard handler must be registered last, after all API handlers, because `httpd_uri_match_wildcard` matches greedily.
+This handler is registered with the pattern `/*`, which matches every address. The server tries handlers in the order of registration, so register it last. If it came first, it would also take the requests meant for the API.
 
 ## mDNS Discovery
 
 <InArticleAd />
 
 
-Typing an IP address every time you want to access the thermostat is inconvenient, and the IP can change if your router reassigns it. mDNS (Multicast DNS) lets you assign a human-readable hostname to the ESP32. Any device on the same local network can then reach it by typing `thermostat.local` in a browser.
+The router gives the thermostat an IP address, perhaps a different one next week; a name is easier to remember and does not change. On the internet DNS servers turn names into addresses, but no DNS server on your local network knows your device. With mDNS (multicast DNS) the device answers for its own name: a browser asks the whole local network "who is `thermostat.local`?", and the ESP32 replies with its address.
 
 ### Initializing mDNS
 
@@ -418,21 +414,27 @@ static void init_mdns(void)
 }
 ```
 
-After calling `mdns_hostname_set("thermostat")`, the ESP32 responds to `thermostat.local` queries. The `mdns_service_add()` call is optional but useful: it advertises the HTTP service so tools like `avahi-browse` or `dns-sd -B _http._tcp` can discover the device automatically.
+After `mdns_hostname_set("thermostat")` the ESP32 answers to `thermostat.local`. `mdns_service_add()` is optional: it announces that the device has a web server, so that tools such as `avahi-browse` or `dns-sd -B _http._tcp` can list it.
 
 ### Platform Notes
 
-mDNS works out of the box on macOS (via Bonjour) and Linux (if Avahi is installed). On Windows, mDNS support depends on the browser. Chrome and Edge resolve `.local` addresses natively on recent Windows 10/11 builds. If `thermostat.local` does not resolve on your machine, install Apple's Bonjour Print Services for Windows or use the IP address directly.
+mDNS works on macOS, and on Linux if Avahi is installed. On Windows 10 and 11, recent versions of Chrome and Edge resolve `.local` names. If `thermostat.local` is not found, install Apple's Bonjour Print Services for Windows, or use the IP address from the boot log. The name works only inside the local network.
 
 ### Adding mDNS to the Build
 
-Add `mdns` to the component requirements in `main/CMakeLists.txt`:
+Since ESP-IDF v5.0 the mDNS component is no longer shipped inside the framework. Download it from the component registry once, from the project folder:
+
+```bash
+idf.py add-dependency "espressif/mdns"
+```
+
+This writes `main/idf_component.yml`, and the next build fetches the component. Then add `mdns` to the component requirements in `main/CMakeLists.txt`:
 
 ```cmake
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
                        REQUIRES esp_http_server
-                                esp_spiffs
+                                spiffs
                                 mdns
                                 nvs_flash
                                 json)
@@ -445,25 +447,34 @@ The `json` component provides cJSON. It is included in ESP-IDF by default but li
 <InArticleAd />
 
 
-The DHT22 communicates over a proprietary single-wire protocol that requires precise timing. The host (ESP32) pulls the data line low for at least 1 ms to signal a read request, then releases it. The sensor responds with 40 bits of data: 16 bits of humidity, 16 bits of temperature, and 8 bits of checksum.
+The DHT22 sends its reading on one wire with no clock line, so the information is in the timing: a short high pulse is a 0 and a long one is a 1. The ESP32 asks for a reading by pulling the line low for at least 1 ms. The sensor answers with 40 bits: 16 for humidity, 16 for temperature and 8 for a checksum.
 
 ### Protocol Timing
 
-The communication sequence works as follows:
+1. The ESP32 pulls the line low for 1 to 10 ms, then releases it.
+2. The sensor answers: low for 80 µs, then high for 80 µs.
+3. For each of the 40 bits, the sensor pulls the line low for 50 µs and then lets it go high. The length of the high pulse is the bit.
 
-1. **Host start signal:** Pull data line low for 1 to 10 ms, then release.
-2. **Sensor response:** Sensor pulls low for 80 us, then high for 80 us.
-3. **Data transmission:** For each of the 40 bits, the sensor pulls low for 50 us (sync pulse), then pulls high. The duration of the high period determines the bit value:
-   - **Bit 0:** High for 26 to 28 us
-   - **Bit 1:** High for 70 us
+```text
+            bit 0                    bit 1
+           ┌──┐                   ┌───────┐
+  ─┐       │  │        ─┐         │       │
+   └───────┘  └─        └─────────┘       └─
+    50 µs  27 µs          50 µs     70 µs
+
+  the code decides at 40 µs:  shorter = 0, longer = 1
+```
+
+The checksum is the last 8 bits of the sum of the four data bytes. If one bit was read wrongly, the sum does not match and the whole reading is rejected. A rejected reading is far better than a wrong temperature.
 
 ### Bit-Banging Implementation
 
-We use GPIO-level reads with `esp_timer_get_time()` for microsecond timing. This approach avoids external library dependencies and works reliably when called from a FreeRTOS task with sufficient priority:
+Bit-banging means that the program reads the pin itself and measures the times, with no dedicated hardware. Here `esp_timer_get_time()` gives the time in microseconds:
 
 ```c
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 
 #define DHT_GPIO    GPIO_NUM_4
 #define DHT_TIMEOUT 1000  /* Timeout in microseconds */
@@ -493,7 +504,8 @@ static dht_reading_t dht_read(void)
     /* --- Host start signal --- */
     gpio_set_direction(DHT_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(DHT_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));         /* Hold low for 2 ms */
+    esp_rom_delay_us(2000);               /* Hold low for 2 ms (shorter than
+                                             one tick at the default 100 Hz) */
     gpio_set_level(DHT_GPIO, 1);
 
     /* Switch to input to read sensor response */
@@ -542,20 +554,22 @@ static dht_reading_t dht_read(void)
 }
 ```
 
-The DHT22 should not be read more often than once every 2 seconds. Reading too frequently produces stale data or communication errors. The sensor task will enforce this interval.
+Do not read the DHT22 more often than once every 2 seconds. It needs that time to make a new measurement.
 
 ### Critical Section Considerations
 
-The DHT22 timing is sensitive to interrupts. If a Wi-Fi interrupt fires in the middle of a bit read, the timing measurement will be wrong and the read will fail. This is normal. The sensor task simply retries on the next cycle. In practice, about 90% of reads succeed, which is more than adequate for a thermostat that updates every 2 seconds.
+The margin is small: a 0 lasts about 27 µs and the code decides at 40 µs. A Wi-Fi interrupt that takes the processor for more than about 13 µs during a 0 makes it measure longer than 40 µs, so it is read as a 1, the checksum fails, and the reading is rejected. This is normal: the sensor task tries again 2 seconds later, and about 9 readings in 10 succeed.
 
-For higher reliability, you could disable interrupts during the bit-reading loop using `portDISABLE_INTERRUPTS()` and `portENABLE_INTERRUPTS()`, but this blocks Wi-Fi for up to 5 ms per read, which can cause packet loss. The retry approach is a better tradeoff for a system that also runs an HTTP server.
+You could disable interrupts during the 40 bits with `portDISABLE_INTERRUPTS()`, but that stops Wi-Fi for up to 5 ms at each reading and loses packets. For a device that is also a web server, trying again is the better choice.
+
+One limit of this firmware: when a reading fails, the relay keeps its last state. If the sensor wire breaks while the heater is on, the heater stays on. A product must count failed readings and switch the heater off after a few, and a heater must always have its own thermal cut-out that does not depend on any software.
 
 ## Relay Control and Hysteresis
 
 <InArticleAd />
 
 
-A relay is a mechanical switch controlled by an electrical signal. When the ESP32 drives the relay module's input pin low (for active-low modules), the relay coil energizes and the contacts close, connecting the load. When the pin goes high, the relay opens.
+Most relay modules are active low: the relay switches on when the ESP32 pulls the IN pin low, and off when the pin is high. So the code writes 0 for on and 1 for off, and it writes 1 first at start, so that the heater is off until the thermostat decides.
 
 ### GPIO Configuration
 
@@ -583,21 +597,32 @@ static void relay_set(bool on)
 
 ### Why Hysteresis Matters
 
-Without hysteresis, the relay would chatter rapidly when the temperature hovers near the setpoint. If the setpoint is 23.0 C and the temperature oscillates between 22.9 and 23.1 due to sensor noise, the relay would toggle every 2 seconds. Mechanical relays have a limited switching lifetime (typically 100,000 cycles), so this chatter wears them out quickly and produces an annoying clicking sound.
+The simplest rule, "heater on below the setpoint, off above it", fails near the setpoint. With a setpoint of 23.0 °C, sensor noise gives readings such as 22.9, 23.1, 22.9, and the relay can switch at every reading, once every 2 seconds. A mechanical relay is good for about 100,000 operations, so it would be worn out within days.
 
-Hysteresis adds a deadband around the setpoint. With a 0.5 C deadband:
-- The relay turns ON when temperature drops below `setpoint - 0.5` (22.5 C)
-- The relay turns OFF when temperature rises above `setpoint + 0.5` (23.5 C)
-- Between 22.5 and 23.5 C, the relay holds its current state
+Hysteresis uses two switching points in place of one. With `HYSTERESIS` set to 0.5 °C and a setpoint of 23.0 °C:
 
-This creates a 1.0 C total band where no switching occurs, which eliminates chatter while keeping the temperature within an acceptable range of the setpoint.
+- the relay switches on when the temperature falls below 23.0 minus 0.5, which is 22.5 °C;
+- the relay switches off when the temperature rises above 23.0 plus 0.5, which is 23.5 °C;
+- between 22.5 and 23.5 °C the relay keeps the state it has.
+
+```text
+ 23.5 ─ ─ ─ ─ ─ ╱╲─ ─ ─ ─ ─ ─ ╱╲─ ─ ─   off above this
+               ╱  ╲          ╱  ╲
+ 23.0         ╱    ╲        ╱    ╲       setpoint
+             ╱      ╲      ╱      ╲
+ 22.5 ─ ─ ─ ╱─ ─ ─ ─ ╲─ ─ ╱─ ─ ─ ─ ╲─   on below this
+
+ heater:  ON     OFF     ON     OFF
+```
+
+The band is 1.0 °C wide. Noise of 0.2 °C can no longer switch the relay: the temperature must cross the whole band before the relay changes again. Think of a door with a latch: a light push does not open it, and once open it stays open until you push it firmly shut. The price is that the room moves 0.5 °C to each side of the setpoint.
 
 ## Thermostat Logic
 
 <InArticleAd />
 
 
-The thermostat control loop ties together the sensor reading, relay control, and operating mode:
+This function is the whole controller. It runs on the ESP32 every 2 seconds, after each good reading, and it needs no network. If the Wi-Fi fails, the page stops and the thermostat does not.
 
 ```c
 #define HYSTERESIS  0.5f
@@ -648,16 +673,16 @@ static void thermostat_update(void)
 }
 ```
 
-The mutex protects the shared state structure because it is accessed from both the sensor task (writing temperature/humidity) and the HTTP server task (reading state for the API and writing setpoint/mode changes). Without the mutex, a partially updated structure could produce inconsistent JSON responses.
+Two tasks use the `state` structure: the sensor task writes the temperature, and the HTTP server task reads the state and writes the setpoint and mode. Each takes the mutex (a lock that one task holds at a time) before it touches `state`, so a response is never built from a half-updated structure.
 
 ## Web UI
 
 <InArticleAd />
 
 
-The web interface is a single HTML file with embedded CSS and JavaScript. It fetches data from the REST API every 2 seconds and displays the current temperature, humidity, relay state, and mode. The user can adjust the setpoint and change modes directly from the page.
+The page is one HTML file with its CSS and JavaScript inside it. Every 2 seconds its script asks `/api/status` for the state and shows it. The buttons send POST requests to change the setpoint and the mode. The page holds no logic of the thermostat.
 
-Create a directory called `spiffs_data` in your project root and add this file as `spiffs_data/index.html`:
+Create a folder `spiffs_data` in the project root and save this file as `spiffs_data/index.html`:
 
 ```html
 <!DOCTYPE html>
@@ -891,14 +916,14 @@ Create a directory called `spiffs_data` in your project root and add this file a
 </html>
 ```
 
-The UI is fully self-contained in a single file, which keeps the SPIFFS image small and avoids multiple HTTP requests for separate CSS and JS files. The dark theme is chosen for readability on mobile screens. The setpoint buttons adjust in 0.5 C increments and clamp between 10 C and 35 C.
+One file means one request and a small file image. The setpoint buttons change it by 0.5 °C and keep it between 10 and 35 °C.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-Here is the complete `main.c` that ties everything together. It initializes Wi-Fi in station mode (reusing the event-driven pattern from Lesson 3), mounts SPIFFS, starts the HTTP server, registers REST API handlers, and runs a sensor task that reads the DHT22 every 2 seconds and updates the thermostat logic.
+This is the complete `main.c`. It joins Wi-Fi as a station with the event handlers you wrote for the signal mapper, mounts SPIFFS, starts the HTTP server, and starts the sensor task.
 
 ```c
 #include <stdio.h>
@@ -918,6 +943,7 @@ Here is the complete `main.c` that ties everything together. It initializes Wi-F
 #include "esp_spiffs.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "nvs_flash.h"
 #include "mdns.h"
 #include "driver/gpio.h"
@@ -1089,7 +1115,7 @@ static dht_reading_t dht_read(void)
     /* Host start signal: pull low for 2 ms, then release */
     gpio_set_direction(DHT_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(DHT_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    esp_rom_delay_us(2000);   /* 2 ms is less than one tick at 100 Hz */
     gpio_set_level(DHT_GPIO, 1);
     gpio_set_direction(DHT_GPIO, GPIO_MODE_INPUT);
 
@@ -1468,14 +1494,15 @@ static void sensor_task(void *pvParameters)
             state.humidity    = reading.humidity;
             xSemaphoreGive(state.mutex);
 
+            /* Run the control logic first so the log shows the new relay state */
+            thermostat_update();
+
             ESP_LOGI(TAG, "Temp=%.1f C  Humidity=%.1f %%  "
                      "Setpoint=%.1f  Relay=%s  Mode=%s",
                      reading.temperature, reading.humidity,
                      state.setpoint,
                      state.relay_on ? "ON" : "OFF",
                      mode_to_str(state.mode));
-
-            thermostat_update();
         } else {
             ESP_LOGW(TAG, "DHT read failed, skipping cycle");
         }
@@ -1535,26 +1562,26 @@ void app_main(void)
 
 ### How the Code Works
 
-The firmware is organized into six layers that each handle a specific concern:
+The firmware has six parts:
 
-1. **Wi-Fi layer:** `wifi_init_sta()` connects to the configured access point using the event-driven pattern from Lesson 3. The function blocks until the connection succeeds or fails. Wi-Fi credentials come from Kconfig (`CONFIG_WIFI_SSID` and `CONFIG_WIFI_PASSWORD`), which you set through `idf.py menuconfig`.
+1. `wifi_init_sta()` joins the access point and waits until the connection succeeds or fails. The SSID and password come from menuconfig (`CONFIG_WIFI_SSID` and `CONFIG_WIFI_PASSWORD`).
 
-2. **SPIFFS layer:** `init_spiffs()` mounts the flash partition labeled "storage" at `/spiffs`. Files placed in the SPIFFS image during the build are accessible through standard C file operations. The `format_if_mount_failed` flag ensures the partition is usable even on first boot.
+2. `init_spiffs()` mounts the partition named "storage" at `/spiffs`. The `format_if_mount_failed` flag formats the partition if it is empty, as on a first boot.
 
-3. **mDNS layer:** `init_mdns()` registers the hostname "thermostat" and advertises an HTTP service. After this call, any device on the same network can resolve `thermostat.local` to the ESP32's IP address.
+3. `init_mdns()` registers the name "thermostat" and announces the web server.
 
-4. **DHT22 layer:** `dht_read()` performs the full one-wire protocol sequence: start signal, sensor response, 40-bit data capture, and checksum verification. It returns a struct with temperature, humidity, and a validity flag. Failed reads are silently skipped.
+4. `dht_read()` does the full exchange with the sensor: start signal, answer, 40 bits and checksum. It returns the temperature, the humidity and a flag that says whether the reading is valid.
 
-5. **HTTP server layer:** `start_webserver()` creates the server and registers four URI handlers. The three API handlers read or modify the thermostat state under mutex protection and return JSON responses. The wildcard static handler serves files from SPIFFS for the web UI.
+5. `start_webserver()` registers four handlers. Three answer the API: they read or change the state under the mutex and reply with JSON. The fourth sends files from SPIFFS.
 
-6. **Sensor task:** `sensor_task()` runs on Core 1 in a loop. Every 2 seconds it reads the DHT22, updates the shared state, runs the thermostat control logic, and logs the current readings. The thermostat logic applies hysteresis in auto mode or forces the relay in manual modes.
+6. `sensor_task()` runs on core 1, away from the Wi-Fi tasks on core 0. Every 2 seconds it reads the DHT22. After a valid reading it updates the state and runs the thermostat logic.
 
 ## Kconfig Menu
 
 <InArticleAd />
 
 
-Add a `main/Kconfig.projbuild` file to provide Wi-Fi configuration options in the menuconfig interface:
+Add `main/Kconfig.projbuild`, so that the Wi-Fi name and password are typed in menuconfig and never written in the source code. The defaults are placeholders:
 
 ```
 menu "Thermostat Configuration"
@@ -1574,14 +1601,13 @@ menu "Thermostat Configuration"
 endmenu
 ```
 
-This lets you set the SSID and password through `idf.py menuconfig` under the "Thermostat Configuration" menu, rather than hardcoding them in the source file.
+The entries appear in `idf.py menuconfig` under "Thermostat Configuration".
 
 ## Project Structure
 
 <InArticleAd />
 
 
-The complete project has the following layout:
 
 <FileTree>
 - esp32-thermostat/
@@ -1610,7 +1636,7 @@ project(esp32-thermostat)
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
                        REQUIRES esp_http_server
-                                esp_spiffs
+                                spiffs
                                 mdns
                                 nvs_flash
                                 json
@@ -1675,15 +1701,18 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 8. Watch the boot log:
    ```
    I (325) thermostat: ESP32 Thermostat starting
+   I (612) thermostat: Connecting to myssid ...
    I (1245) thermostat: Connected. IP: 192.168.1.42
+   I (1246) thermostat: Wi-Fi connected
    I (1247) thermostat: mDNS: thermostat.local
    I (1250) thermostat: SPIFFS: total=438272, used=4096
    I (1253) thermostat: HTTP server started on port 80
+   I (1254) thermostat: Sensor task started on core 1
    I (1255) thermostat: System ready. Open http://thermostat.local
-   I (3260) thermostat: Temp=22.3 C  Humidity=45.1 %  Setpoint=23.0  Relay=ON  Mode=auto
+   I (1262) thermostat: Temp=22.3 C  Humidity=45.1 %  Setpoint=23.0  Relay=ON  Mode=auto
    ```
 
-9. Open a browser on any device connected to the same Wi-Fi network and navigate to `http://thermostat.local`. You should see the thermostat web interface with live temperature and humidity readings. Adjust the setpoint and observe the relay clicking on and off as the temperature crosses the hysteresis boundaries.
+9. On any device on the same Wi-Fi network, open `http://thermostat.local`. The page shows live temperature and humidity. Change the setpoint and hear the relay click as the temperature crosses the hysteresis band edges.
 
 10. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
@@ -1699,7 +1728,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 | Relay chatters rapidly | Increase `HYSTERESIS` from 0.5 to 1.0. If the sensor readings are noisy, add a software moving average filter. |
 
 :::tip[Instrument it]
-A device that serves its own REST API is a monitor that needs no cloud: point a browser at it on the LAN to read live values, or POST a command to flip a relay or change a setpoint. That is the right pattern for a machine on a closed factory network or a site with no internet, and the same endpoints bridge outward later when you do want remote access. Expose the readings and the controls as clean routes, and the device is ready to [join a wider system](/education/iot-systems/) like [siliconwit.io](https://siliconwit.io) when it needs to.
+A device with its own REST API can be watched with no cloud at all: a browser on the local network reads the live values and changes a setpoint. That suits a machine on a closed factory network or a site with no internet. The device keeps control and its limits in its own firmware, and the network is only a way to see and to adjust. Give the readings and the settings clear addresses, and the device is ready to [join a wider system](/education/iot-systems/) such as [siliconwit.io](https://siliconwit.io) later, for records and alerts across sites.
 :::
 
 ## Exercises
@@ -1707,20 +1736,25 @@ A device that serves its own REST API is a monitor that needs no cloud: point a 
 <InArticleAd />
 
 
-1. **Add a temperature history endpoint.** Create a circular buffer that stores the last 60 temperature readings (2 minutes of data at 2-second intervals). Add a `GET /api/history` endpoint that returns the buffer as a JSON array of objects with `timestamp` and `temp` fields. Use `esp_timer_get_time()` for the timestamps and convert to seconds since boot. Update the web UI to display a simple bar chart of the history using CSS bars (no charting library needed).
+1. **Add a temperature history endpoint.** Keep the last 60 readings (2 minutes at 2-second intervals) in a circular buffer. Add `GET /api/history`, which returns them as a JSON array of objects with `timestamp` and `temp`; take the timestamps from `esp_timer_get_time()` as seconds since boot. Show the history in the web UI as a bar chart of CSS bars (no charting library).
 
-2. **Persist the setpoint in NVS.** Currently the setpoint resets to 23.0 C on every reboot. Use the NVS API from Lesson 2 to save the setpoint whenever it changes and restore it on boot. Be careful not to write to flash on every 0.5 C button press if the user holds the button. Add a 3-second debounce timer that only writes to NVS after the user stops adjusting.
+2. **Persist the setpoint in NVS.** The setpoint returns to 23.0 C at every reboot. Save it in NVS when it changes, as in the touch dimmer, and restore it at boot. Do not write flash on every 0.5 C press while the user holds the button: use a 3-second timer that writes only after the user stops adjusting.
 
-3. **Add OTA-updateable web UI.** Instead of flashing the SPIFFS image separately, embed the HTML file as a binary blob in the firmware using `EMBED_FILES` in CMakeLists.txt. This eliminates the separate SPIFFS flash step. Modify the static file handler to serve from the embedded data. Compare the tradeoffs (larger firmware binary, simpler flash process, no filesystem overhead) with the SPIFFS approach.
+3. **Add OTA-updateable web UI.** Embed the HTML file in the firmware as a binary blob with `EMBED_FILES` in CMakeLists.txt, so there is no separate SPIFFS flash step, and serve it from the embedded data. Compare this with SPIFFS: a larger firmware binary, a simpler flash process, no file system overhead.
 
-4. **Implement a moving average filter for the DHT22.** Raw DHT22 readings can jump by 0.3 to 0.5 C between consecutive reads due to sensor noise and quantization. Implement a simple moving average over the last 5 valid readings. Store the readings in a circular buffer and compute the average before updating `state.temperature`. Compare the filtered and unfiltered readings in the serial log and observe how the filter reduces relay toggling near the setpoint boundary.
+4. **Implement a moving average filter for the DHT22.** Raw readings can jump by 0.3 to 0.5 C between reads (noise and quantization). Average the last 5 valid readings, kept in a circular buffer, before updating `state.temperature`. Compare filtered and raw readings in the serial log, and watch the filter reduce relay switching near the band edges.
 
 ## Summary
 
 <InArticleAd />
 
 
-You built a complete HTTP server on the ESP32 that serves a responsive web interface from the SPIFFS filesystem and exposes RESTful JSON endpoints for status, setpoint, and mode control. The firmware reads temperature and humidity from a DHT22 sensor using a bit-banged one-wire protocol, applies hysteresis-based thermostat logic to prevent relay chatter, and makes the device discoverable on the local network through mDNS. The thermostat state is protected by a FreeRTOS mutex so the sensor task and HTTP handler threads can safely share data. The REST API design follows a clean pattern: GET for reading state, POST for modifying it, JSON for all payloads, and proper error responses for malformed requests.
+- The HTTP server calls one handler for each method and URI. GET reads the state, POST changes it, and the data is JSON.
+- A handler must check the length, the names and the types of what it receives, and answer with an error when they are wrong.
+- SPIFFS keeps the web page in its own flash partition, and mDNS gives the device a name on the local network.
+- The DHT22 sends bits as pulse lengths, and its checksum rejects a reading that an interrupt disturbed.
+- Hysteresis gives two switching points, so that noise cannot switch the relay at every reading.
+- The thermostat logic runs in the firmware. The web page shows and adjusts it, and the thermostat continues without the network.
 
 <EmbeddedProgrammingEsp32Comments />
 

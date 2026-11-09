@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Every lesson so far has focused on one capability at a time. Now you will combine them all into a real deployment. The capstone is a two-node wireless sensor network: an outdoor node that wakes from deep sleep, reads sensors, publishes over MQTT, and goes back to sleep; and an indoor node that stays powered, subscribes to the same MQTT topics, and displays live readings on an OLED screen. You will handle reconnection, offline buffering, OTA updates for both nodes, and walk through a production readiness checklist. This is what a complete IoT project looks like. #ESP32 #SensorNetwork #Capstone
+A sensor that works on your desk is not yet a system. Outdoors the battery runs down, the Wi-Fi drops, a sensor fails, and nobody is standing near to see it. A real installation must keep working through these, and must show clearly when it cannot. In this capstone you join the parts of the course into two nodes. An outdoor node on batteries wakes from deep sleep, reads its sensors, publishes over MQTT and sleeps again. An indoor node stays powered, subscribes to the same MQTT topics and shows the readings on a small OLED screen and a web page. You add reconnection, OTA updates for both nodes, and a checklist of what to settle before you install it. #ESP32 #SensorNetwork #Capstone
 
 ## What We Are Building
 
@@ -54,10 +54,10 @@ A complete IoT deployment with two ESP32 nodes. The outdoor sensor node runs on 
 |-----|-----------|----------|-------|
 | U1 | ESP32 DevKitC (outdoor node) | 1 | Battery powered |
 | U2 | ESP32 DevKitC (indoor node) | 1 | USB powered (second board ideal, can share one) |
-| S1 | DHT22 temperature/humidity sensor | 1 | Reused from previous lessons |
-| S2 | Capacitive soil moisture sensor | 1 | Reused from Lesson 5 |
-| D1 | SSD1306 OLED display (128x64, I2C) | 1 | Or reuse from prior courses |
-| B1 | 2x AA battery holder | 1 | Reused from Lesson 8 |
+| S1 | DHT22 temperature/humidity sensor | 1 | The one you have used so far |
+| S2 | Capacitive soil moisture sensor | 1 | From the MQTT lesson |
+| D1 | SSD1306 OLED display (128x64, I2C) | 1 | |
+| B1 | 2x AA battery holder | 1 | From the deep sleep lesson |
 | | 2x AA batteries | 2 | Alkaline or lithium |
 | R1 | 4.7k ohm resistor | 1 | DHT22 pull-up |
 | | Breadboard + jumper wires | 2 sets | One per node |
@@ -67,30 +67,37 @@ A complete IoT deployment with two ESP32 nodes. The outdoor sensor node runs on 
 <InArticleAd />
 
 
-The system consists of two ESP32 nodes communicating through an MQTT broker. The outdoor sensor node is battery powered and spends most of its time in deep sleep. Every 5 minutes it wakes, reads three sensors (DHT22 for temperature and humidity, capacitive soil moisture via ADC, battery voltage via ADC with a voltage divider), connects to Wi-Fi, publishes all readings to the MQTT broker over TLS, checks for OTA firmware updates, and returns to deep sleep. The entire wake cycle takes about 5 to 8 seconds.
+The two nodes never talk to each other directly: one is asleep nearly all the time, so the other could not reach it. Each talks to an MQTT broker, an always-on server that passes each published message to every node that subscribed.
 
-The indoor display node is USB powered and always on. It maintains a persistent MQTT connection, subscribes to the outdoor sensor topics, and renders live data on an SSD1306 OLED (128x64 pixels, I2C). It also runs an HTTP server on port 80 that serves a simple web dashboard showing the same readings in a browser. Both nodes register last will messages with the broker so that if either goes offline unexpectedly, the other (or any monitoring client) receives a notification.
+The outdoor sensor node runs on batteries and spends most of its time in deep sleep. Every 5 minutes it does this, in about 5 to 8 seconds:
 
-Data flows in one direction for sensor readings:
+1. It wakes and reads the DHT22 (temperature and humidity), the soil moisture sensor and the battery voltage. The last two go through the ADC.
+2. It connects to Wi-Fi and publishes the readings to the broker over TLS, the encryption that HTTPS also uses.
+3. It checks for a firmware update.
+4. It returns to deep sleep.
 
+The indoor display node runs from USB and is always on. It keeps its MQTT connection open, subscribes to the outdoor topics, draws the readings on an SSD1306 OLED (128x64 pixels, I2C), and serves the same readings as a web page on port 80. Each node gives the broker a last will: a message the broker sends for the node if it disappears without saying goodbye.
+
+Sensor readings flow in one direction:
+
+```text
+ ┌─────────────┐   ┌────────┐   ┌─────────────┐
+ │ Outdoor     │   │ MQTT   │   │ Indoor      │
+ │ sensor node ├──>│ broker ├──>│ display     │
+ │ battery,    │   │ (TLS)  │   │ node, USB,  │
+ │ deep sleep  │   │        │   │ always on   │
+ └─────────────┘   └────────┘   └─────────────┘
+   publishes        passes on     subscribes
 ```
-┌──────────────────┐          ┌──────────────┐          ┌──────────────────┐
-│  Outdoor Sensor  │          │              │          │  Indoor Display  │
-│     Node         │─publish──│  MQTT Broker │──deliver─│     Node         │
-│  (battery, sleep)│          │   (TLS)      │          │  (USB, always on)│
-└──────────────────┘          └──────────────┘          └──────────────────┘
-    DHT22, Soil,                  HiveMQ /               SSD1306 OLED,
-    Battery ADC                   Mosquitto               HTTP Dashboard
-```
 
-Both nodes also pull OTA updates from a firmware HTTP server on your local network. The outdoor node checks once per wake cycle; the indoor node checks every hour.
+Both nodes also fetch OTA updates from an HTTP server on your local network. The outdoor node checks once in each wake, and the indoor node once an hour.
 
 ## MQTT Topic Design
 
 <InArticleAd />
 
 
-A clean topic hierarchy keeps the system organized and makes it easy to add more sensor nodes later. All topics are nested under `home/outdoor/` for this node:
+A topic is the address of a message, written like a path. Choose the names with a plan, so that a second sensor node can be added later without renaming anything. All topics of this node start with `home/outdoor/`:
 
 ```
 home/outdoor/temperature    →  "23.5"       (Celsius, retained)
@@ -102,13 +109,15 @@ home/outdoor/status         →  "online" / "outdoor-node-offline" (retained, la
 
 ### Topic Design Decisions
 
-**Retained messages.** Every data topic uses retained messages. This means a new subscriber (such as the indoor display node rebooting) immediately receives the last known values without waiting for the next sensor wake cycle. The status topic is also retained so that the last will message persists until the node comes back online and overwrites it with "online."
+**Retained messages.** The broker keeps a retained message and gives it to every new subscriber at once. Every data topic and the status topic are retained, so a restarted indoor node gets the last values immediately instead of waiting up to 5 minutes for the next wake.
 
-**QoS 1 (at least once).** All publishes and subscriptions use QoS 1. QoS 0 would risk losing a reading if the TCP connection drops mid-publish, and the outdoor node cannot retry because it is about to enter deep sleep. QoS 2 (exactly once) adds extra round trips that increase wake time and battery drain. QoS 1 is the practical middle ground: the broker acknowledges receipt, and the occasional duplicate message is harmless for sensor data (the display simply shows the latest value).
+**QoS 1 (at least once).** The quality of service (QoS) level says how hard MQTT tries to deliver a message. With QoS 0 a reading is lost if the connection drops during the publish, and the outdoor node, about to sleep, cannot try again. QoS 2 (exactly once) needs more messages each way: more time awake, less battery life. With QoS 1 the broker confirms each message; a rare duplicate does no harm, because the display shows the latest value.
 
-**Flat values, not JSON.** Each topic carries a single numeric string. This is simpler to parse on the display node and avoids pulling in a JSON library. If you later need structured payloads (timestamps, units, node IDs), switching to JSON is straightforward.
+**Plain values, not JSON.** Each topic carries one number as text. The display node reads it without a JSON library. If you later need a time or a unit in the message, change to JSON then.
 
-**Last will message.** The outdoor node registers its last will on `home/outdoor/status` with the payload `outdoor-node-offline`, QoS 1, retained. When the node connects, it immediately publishes `online` to the same topic. If the node crashes or the network drops, the broker delivers the last will after the keep-alive timeout expires.
+**Last will message.** The outdoor node gives the broker its last will on `home/outdoor/status`: the payload `outdoor-node-offline`, QoS 1, retained. When the node connects, it publishes `online` to the same topic. If the node crashes or the network drops while it is connected, the broker sends the will once the keep-alive time has passed.
+
+The will has a surprising limit. The node disconnects correctly before each sleep, so the will covers only the few seconds it is connected. A node whose battery dies in its sleep never triggers it, and the status stays `online`. The honest sign of a dead node is the age of the last update, which the display shows and which keeps growing.
 
 ## Circuit Connections
 
@@ -118,24 +127,24 @@ home/outdoor/status         →  "online" / "outdoor-node-offline" (retained, la
 ### Outdoor Sensor Node Wiring
 
 ```text
- Outdoor Node (Battery Powered)
  ┌──────────────┐
  │ ESP32 DevKit │
- │         GP4  ├──┬──[R1 4.7K]── 3.3V
- │              │  └── DHT22 Data
+ │          GP4 ├──┬── DHT22 data
+ │              │  └──[R1 4.7K]── 3.3V
+ │         GP34 ├───── Soil moisture AOUT
  │              │
- │        GP34  ├───── Soil Moisture AOUT
+ │              │  ┌──[100K]── Batt+
+ │         GP35 ├──┤
+ │              │  └──[100K]── GND
  │              │
- │        GP35  ├───┐
- │              │   ├── Voltage Divider
- │          GND ├──[100K]──┤──[100K]── Batt+
- │              │          │
- │         3.3V ├── Batt+ (2xAA, 3.0V)
- │          GND ├── Batt-
+ │         3.3V ├───── Batt+ (2x AA, 3.0V)
+ │          GND ├───── Batt-
  └──────────────┘
 ```
 
-Connect the DHT22 sensor and soil moisture sensor to the ESP32 on a breadboard. The battery voltage is read through a resistor voltage divider so that the full battery range (0 to 4.2V for lithium, 0 to 3.3V for alkaline) maps into the ESP32's ADC input range (0 to 3.3V). If you are using 2x AA alkaline batteries (3.0V nominal), the divider is optional since the voltage is already within range, but including it protects the ADC from any overshoot.
+Connect the DHT22 and the soil moisture sensor to the ESP32 on a breadboard.
+
+The ADC cannot read the battery directly. With 12 dB attenuation it measures accurately only from about 0.15V to 2.45V, and two fresh AA cells give up to about 3.2V (a lithium cell up to 4.2V). A voltage divider, two equal resistors in series across the battery, gives half of the battery voltage at the point between them, and half is inside the range.
 
 | ESP32 Pin | Component | Notes |
 |-----------|-----------|-------|
@@ -149,12 +158,11 @@ Connect the DHT22 sensor and soil moisture sensor to the ESP32 on a breadboard. 
 | GND | Voltage divider bottom | Two 100k resistors |
 | Battery + | Voltage divider top | Through 100k to GPIO 35 |
 
-The voltage divider uses two 100k ohm resistors. The midpoint connects to GPIO 35. With this divider, a 3.0V battery reads as 1.5V at the ADC, and you multiply by 2 in software to get the true voltage.
+The divider uses two 100k ohm resistors, and the point between them goes to GPIO 35. A 3.0V battery reads as 1.5V at the ADC, and the software multiplies by 2. The divider is always connected, so it draws 3.0 V / 200 kΩ = 15 uA all the time, more than the sleeping chip itself.
 
 ### Indoor Display Node Wiring
 
 ```text
- Indoor Node (USB Powered)
  ┌──────────────┐    ┌──────────────┐
  │ ESP32 DevKit │    │ SSD1306 OLED │
  │              │    │ 128x64 I2C   │
@@ -183,7 +191,7 @@ Most SSD1306 breakout boards have built-in pull-up resistors on SDA and SCL. If 
 <InArticleAd />
 
 
-This is the complete `main.c` for the outdoor sensor node. It combines deep sleep (Lesson 8), MQTT with TLS (Lesson 5), ADC sensor reading (Lesson 2), and OTA updates (Lesson 7) into a single wake-publish-sleep cycle.
+This is the complete `main.c` for the outdoor sensor node. It joins deep sleep, MQTT with TLS, the ADC and OTA updates into one cycle: wake, publish, sleep. Read `app_main` at the end first. It shows the order of the whole cycle.
 
 ### Project Structure
 
@@ -202,8 +210,10 @@ This is the complete `main.c` for the outdoor sensor node. It combines deep slee
 ### sdkconfig.defaults
 
 ```ini
-# Partition table for OTA
+# Partition table for OTA (needs 4 MB flash) with rollback
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_TWO_OTA=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Wi-Fi
 CONFIG_ESP_WIFI_SSID="YOUR_SSID"
@@ -215,7 +225,8 @@ CONFIG_MQTT_USERNAME="your-username"
 CONFIG_MQTT_PASSWORD="your-password"
 
 # OTA
-CONFIG_FIRMWARE_UPGRADE_URL="https://192.168.1.100:8070/outdoor_sensor_node.bin"
+CONFIG_FIRMWARE_UPGRADE_URL="http://192.168.1.100:8070/outdoor_sensor_node.bin"
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 
 # Task watchdog
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
@@ -225,6 +236,14 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
 ```kconfig
 menu "Outdoor Sensor Node Configuration"
+
+    config ESP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+
+    config ESP_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "mypassword"
 
     config BROKER_URL
         string "MQTT Broker URL"
@@ -242,7 +261,7 @@ menu "Outdoor Sensor Node Configuration"
 
     config FIRMWARE_UPGRADE_URL
         string "OTA Firmware URL"
-        default "https://192.168.1.100:8070/outdoor_sensor_node.bin"
+        default "http://192.168.1.100:8070/outdoor_sensor_node.bin"
         help
             HTTP(S) URL where new firmware binaries are hosted.
 
@@ -261,7 +280,7 @@ endmenu
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    EMBED_TXTFILES "${PROJECT_PATH}/server_certs/mqtt_server.pem"
+    EMBED_TXTFILES "../server_certs/mqtt_server.pem"
 )
 ```
 
@@ -292,6 +311,7 @@ idf_component_register(
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_task_wdt.h"
@@ -330,8 +350,7 @@ static EventGroupHandle_t wifi_event_group;
 static int wifi_retry_count = 0;
 #define MAX_WIFI_RETRIES 5
 
-/* ── Firmware version for OTA comparison ── */
-#define FIRMWARE_VERSION "1.0.0"
+/* ── Firmware version for OTA comparison: PROJECT_VER in the top-level CMakeLists.txt ── */
 
 /* ── Embedded broker CA certificate ── */
 extern const uint8_t mqtt_server_pem_start[] asm("_binary_mqtt_server_pem_start");
@@ -593,7 +612,7 @@ static bool wifi_connect(void)
  * ────────────────────────────────────────────── */
 
 static bool mqtt_publish_done = false;
-static bool mqtt_connected    = false;
+static volatile bool mqtt_connected = false;
 
 static void mqtt_event_handler(void *args, esp_event_base_t base,
                                int32_t event_id, void *event_data)
@@ -665,15 +684,41 @@ static void check_ota_update(void)
         .http_config = &http_cfg,
     };
 
-    esp_err_t ret = esp_https_ota(&ota_cfg);
+    esp_https_ota_handle_t ota = NULL;
+    esp_err_t ret = esp_https_ota_begin(&ota_cfg, &ota);
+    if (ret != ESP_OK) {
+        ESP_LOGI(TAG, "No OTA update available (server unreachable or no binary)");
+        return;
+    }
+
+    /* Download only when the server image has a different version */
+    esp_app_desc_t new_app;
+    ret = esp_https_ota_get_img_desc(ota, &new_app);
+    if (ret != ESP_OK ||
+        strcmp(new_app.version, esp_app_get_description()->version) == 0) {
+        ESP_LOGI(TAG, "Firmware is up to date");
+        esp_https_ota_abort(ota);
+        return;
+    }
+
+    ESP_LOGI(TAG, "New firmware %s found, downloading", new_app.version);
+    do {
+        ret = esp_https_ota_perform(ota);
+        esp_task_wdt_reset();
+    } while (ret == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
+    if (ret != ESP_OK || !esp_https_ota_is_complete_data_received(ota)) {
+        ESP_LOGW(TAG, "OTA download failed: %s", esp_err_to_name(ret));
+        esp_https_ota_abort(ota);
+        return;
+    }
+
+    ret = esp_https_ota_finish(ota);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "OTA update successful, restarting");
         esp_restart();
-    } else if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_HTTP_CONNECT) {
-        ESP_LOGI(TAG, "No OTA update available (server unreachable or no new binary)");
-    } else {
-        ESP_LOGW(TAG, "OTA update failed: %s", esp_err_to_name(ret));
     }
+    ESP_LOGW(TAG, "OTA update failed: %s", esp_err_to_name(ret));
 }
 
 /* ──────────────────────────────────────────────
@@ -805,23 +850,29 @@ void app_main(void)
 }
 ```
 
-The code follows a linear flow: boot, read sensors, connect, publish, check OTA, sleep. There are no persistent tasks or event loops because the node is only awake for a few seconds. The `RTC_DATA_ATTR` variables (`boot_count` and `msg_counter`) survive deep sleep resets and let you track how many cycles the node has completed.
+The code runs in a straight line: start, read sensors, connect, publish, check OTA, sleep. It has no tasks of its own, because the node is awake for only a few seconds. The `RTC_DATA_ATTR` variables (`boot_count` and `msg_counter`) keep their values through deep sleep and count the cycles.
+
+Three choices in this code are worth a second look:
+
+- If the DHT22 fails twice, the node publishes -999. An impossible value shows the fault on the display. An old value sent again would hide it.
+- If Wi-Fi does not connect, the node sleeps and tries again at the next wake. That reading is lost. Nothing is stored for later.
+- The node marks new firmware as valid at the start of `app_main`, before it has tested anything. This is simpler than the self-test of the OTA lesson and weaker: firmware that starts but cannot publish is kept. A good first improvement is to mark it valid only after the first publish has succeeded.
 
 ## SSD1306 OLED Driver (I2C)
 
 <InArticleAd />
 
 
-Before writing the indoor display node firmware, you need a way to drive the SSD1306 OLED over I2C. The driver below sends raw commands and pixel data to the display controller. It includes an in-memory framebuffer (1024 bytes for 128x64 pixels) and a built-in 5x7 pixel font for rendering text. This approach is similar to what you may have seen in the ATmega328P course with SPI, but here everything goes over I2C.
+The indoor node needs a driver for the SSD1306 OLED, the chip that controls the display, over I2C. It draws in two stages: it builds the whole picture in a framebuffer (an array in RAM with one bit per pixel), then sends the array to the display in one transfer, so the display never shows a half-drawn picture. The driver also holds a 5x7 pixel font for text.
 
 ### How the SSD1306 I2C Protocol Works
 
-The SSD1306 uses a standard I2C interface with address `0x3C` (or `0x3D` on some boards). Every I2C write starts with a **control byte** that tells the display whether the following bytes are commands or data:
+The SSD1306 has the I2C address `0x3C` (`0x3D` on some boards). Every I2C write starts with a **control byte** that says what the bytes after it are:
 
-- **Control byte `0x00`**: the next byte is a command (single command mode).
-- **Control byte `0x40`**: all following bytes are display data (GDDRAM pixel data).
+- **Control byte `0x00`**: the next bytes are commands (this driver sends one command per write).
+- **Control byte `0x40`**: all the next bytes are pixel data.
 
-The 128x64 display is organized into 8 **pages** of 128 columns. Each page is 8 pixels tall. One byte in the framebuffer represents a vertical column of 8 pixels within a page. So the full framebuffer is 128 x 8 = 1024 bytes.
+The 128x64 display is divided into 8 **pages** of 128 columns, and each page is 8 pixels high. One byte of the framebuffer is one column of 8 pixels in a page. The full framebuffer is 128 x 8 = 1024 bytes.
 
 ### ssd1306.h
 
@@ -890,6 +941,8 @@ void ssd1306_contrast(ssd1306_t *oled, uint8_t value);
 
 #include "ssd1306.h"
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 
 static const char *TAG = "ssd1306";
@@ -1139,14 +1192,14 @@ void ssd1306_contrast(ssd1306_t *oled, uint8_t value)
 }
 ```
 
-Each character in the 5x7 font is stored as 5 bytes, where each byte represents one column of pixels. The `ssd1306_text` function walks through the string, looks up each character's glyph, and sets the corresponding pixels in the framebuffer. After composing the full frame, a single call to `ssd1306_update` pushes all 1024 bytes to the display over I2C.
+Each character of the 5x7 font is 5 bytes, one per column of pixels. `ssd1306_text` walks through the string, looks up each character's glyph and sets its pixels in the framebuffer. Once the frame is complete, one call to `ssd1306_update` sends all 1024 bytes to the display over I2C.
 
 ## Indoor Display Node Firmware
 
 <InArticleAd />
 
 
-The indoor display node is the second half of the system. It subscribes to the outdoor sensor topics, renders the data on the SSD1306 OLED, and serves a web dashboard. Unlike the outdoor node, this one runs continuously with multiple FreeRTOS tasks.
+The indoor display node subscribes to the outdoor sensor topics, draws the data on the SSD1306 OLED and serves a web page. It never sleeps, so its firmware is built in the opposite way to the outdoor node: several FreeRTOS tasks that run without end.
 
 ### Project Structure
 
@@ -1167,8 +1220,10 @@ The indoor display node is the second half of the system. It subscribes to the o
 ### sdkconfig.defaults
 
 ```ini
-# Partition table for OTA
+# Partition table for OTA (needs 4 MB flash) with rollback
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_TWO_OTA=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Wi-Fi
 CONFIG_ESP_WIFI_SSID="YOUR_SSID"
@@ -1180,7 +1235,8 @@ CONFIG_MQTT_USERNAME="your-username"
 CONFIG_MQTT_PASSWORD="your-password"
 
 # OTA
-CONFIG_FIRMWARE_UPGRADE_URL="https://192.168.1.100:8070/indoor_display_node.bin"
+CONFIG_FIRMWARE_UPGRADE_URL="http://192.168.1.100:8070/indoor_display_node.bin"
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 
 # Task watchdog (longer for always-on node)
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
@@ -1193,6 +1249,14 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
 ```kconfig
 menu "Indoor Display Node Configuration"
+
+    config ESP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+
+    config ESP_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "mypassword"
 
     config BROKER_URL
         string "MQTT Broker URL"
@@ -1208,7 +1272,7 @@ menu "Indoor Display Node Configuration"
 
     config FIRMWARE_UPGRADE_URL
         string "OTA Firmware URL"
-        default "https://192.168.1.100:8070/indoor_display_node.bin"
+        default "http://192.168.1.100:8070/indoor_display_node.bin"
 
     config OTA_CHECK_INTERVAL_MIN
         int "OTA check interval in minutes"
@@ -1223,7 +1287,7 @@ endmenu
 idf_component_register(
     SRCS "main.c" "ssd1306.c"
     INCLUDE_DIRS "."
-    EMBED_TXTFILES "${PROJECT_PATH}/server_certs/mqtt_server.pem"
+    EMBED_TXTFILES "../server_certs/mqtt_server.pem"
 )
 ```
 
@@ -1256,6 +1320,7 @@ idf_component_register(
 #include "esp_event.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_http_server.h"
@@ -1320,14 +1385,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_connected_flag = false;
-        if (wifi_retry_count < MAX_WIFI_RETRIES) {
-            wifi_retry_count++;
-            ESP_LOGW(TAG, "Wi-Fi disconnected, retry %d/%d", wifi_retry_count, MAX_WIFI_RETRIES);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_wifi_connect();
-        } else {
+        wifi_retry_count++;
+        if (wifi_retry_count == MAX_WIFI_RETRIES) {
+            /* Report the failure once, then keep trying (always-on node) */
             xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
         }
+        ESP_LOGW(TAG, "Wi-Fi disconnected, retry %d", wifi_retry_count);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_wifi_connect();
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -1429,6 +1494,7 @@ static void mqtt_event_handler(void *args, esp_event_base_t base,
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected, subscribing to outdoor topics");
         esp_mqtt_client_subscribe(client, "home/outdoor/#", 1);
+        esp_mqtt_client_publish(client, "home/indoor/status", "online", 0, 1, 1);
         break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -1584,7 +1650,7 @@ static esp_err_t dashboard_handler(httpd_req_t *req)
     }
 
     /* Build HTML response */
-    char html[1024];
+    static char html[1536];  /* The page is about 1350 bytes; static keeps it off the task stack */
     int len = snprintf(html, sizeof(html),
         "<!DOCTYPE html>"
         "<html><head>"
@@ -1629,6 +1695,10 @@ static esp_err_t dashboard_handler(httpd_req_t *req)
         (long long)elapsed_sec
     );
 
+    if (len >= (int)sizeof(html)) {
+        len = sizeof(html) - 1;  /* snprintf truncated the page */
+    }
+
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, len);
     return ESP_OK;
@@ -1656,29 +1726,61 @@ static httpd_handle_t start_webserver(void)
  * OTA update task (checks periodically)
  * ────────────────────────────────────────────── */
 
+static void check_ota_update(void)
+{
+    ESP_LOGI(TAG, "Checking for OTA update");
+
+    esp_http_client_config_t http_cfg = {
+        .url = CONFIG_FIRMWARE_UPGRADE_URL,
+        .timeout_ms = 10000,
+    };
+    esp_https_ota_config_t ota_cfg = {
+        .http_config = &http_cfg,
+    };
+
+    esp_https_ota_handle_t ota = NULL;
+    esp_err_t ret = esp_https_ota_begin(&ota_cfg, &ota);
+    if (ret != ESP_OK) {
+        ESP_LOGI(TAG, "No OTA update available (server unreachable or no binary)");
+        return;
+    }
+
+    /* Download only when the server image has a different version */
+    esp_app_desc_t new_app;
+    ret = esp_https_ota_get_img_desc(ota, &new_app);
+    if (ret != ESP_OK ||
+        strcmp(new_app.version, esp_app_get_description()->version) == 0) {
+        ESP_LOGI(TAG, "Firmware is up to date");
+        esp_https_ota_abort(ota);
+        return;
+    }
+
+    ESP_LOGI(TAG, "New firmware %s found, downloading", new_app.version);
+    do {
+        ret = esp_https_ota_perform(ota);
+    } while (ret == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
+    if (ret != ESP_OK || !esp_https_ota_is_complete_data_received(ota)) {
+        ESP_LOGW(TAG, "OTA download failed: %s", esp_err_to_name(ret));
+        esp_https_ota_abort(ota);
+        return;
+    }
+
+    ret = esp_https_ota_finish(ota);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA update successful, restarting");
+        esp_restart();
+    }
+    ESP_LOGW(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+}
+
 static void ota_task(void *arg)
 {
     /* Wait a bit after boot before first check */
     vTaskDelay(pdMS_TO_TICKS(30000));
 
     while (1) {
-        ESP_LOGI(TAG, "Checking for OTA update");
-
-        esp_http_client_config_t http_cfg = {
-            .url = CONFIG_FIRMWARE_UPGRADE_URL,
-            .timeout_ms = 10000,
-        };
-        esp_https_ota_config_t ota_cfg = {
-            .http_config = &http_cfg,
-        };
-
-        esp_err_t ret = esp_https_ota(&ota_cfg);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "OTA update successful, restarting");
-            esp_restart();
-        } else {
-            ESP_LOGI(TAG, "No OTA update available: %s", esp_err_to_name(ret));
-        }
+        check_ota_update();
 
         /* Wait for configured interval */
         vTaskDelay(pdMS_TO_TICKS(CONFIG_OTA_CHECK_INTERVAL_MIN * 60 * 1000));
@@ -1748,9 +1850,16 @@ void app_main(void)
 }
 ```
 
-The indoor node runs four concurrent services: the MQTT client (managed by the ESP-MQTT library on its own task), the OLED display refresh task (1 Hz on core 1), the HTTP server (handled by the httpd component), and the OTA check task (runs on core 0, checks once per hour). All sensor data access goes through a mutex so that the display task, the HTTP handler, and the MQTT callback never corrupt each other's reads and writes.
+The indoor node runs four things at the same time:
 
-The web dashboard uses `<meta http-equiv='refresh' content='5'>` to auto-reload every 5 seconds. This avoids the need for JavaScript or WebSocket code. Anyone on the same network can open the ESP32's IP address in a browser and see live sensor readings.
+- the MQTT client, in a task of the ESP-MQTT library
+- the OLED refresh task, once a second on core 1
+- the HTTP server, in the httpd component
+- the OTA check task, on core 0, once an hour
+
+Three of them use the same sensor values: the MQTT callback writes them, and the display task and the HTTP handler read them. A mutex, a lock that only one task can hold at a time, guards the values, so that no task reads a set that is half updated.
+
+The web page reloads itself every 5 seconds with `<meta http-equiv='refresh' content='5'>`, so it needs no JavaScript. Anyone on the same network can open the IP address of the ESP32 in a browser and see the readings. The page has no password.
 
 ## Building and Deploying
 
@@ -1781,6 +1890,7 @@ sudo apt install mosquitto mosquitto-clients
 openssl req -new -x509 -days 365 -nodes \
     -keyout mqtt_server.key -out mqtt_server.pem \
     -subj "/CN=mqtt-broker"
+# The CN must match the host name (or IP address) in your broker URL
 
 # Configure Mosquitto (/etc/mosquitto/conf.d/tls.conf)
 # listener 8883
@@ -1809,7 +1919,7 @@ cd outdoor_sensor_node
 # or run menuconfig:
 idf.py menuconfig
 # Go to: Outdoor Sensor Node Configuration
-# Set broker URL, username, password, OTA URL
+# Set Wi-Fi SSID and password, broker URL, username, password, OTA URL
 
 # Build
 idf.py build
@@ -1849,7 +1959,7 @@ cd ~/firmware_server
 python3 -m http.server 8070
 ```
 
-When you rebuild a project with changes, copy the new binary to this directory. The next time a node checks for an OTA update, it will download and install the new firmware.
+When you rebuild a project with changes, first raise its version (`set(PROJECT_VER "1.0.1")` before the `project()` line of the top-level `CMakeLists.txt`, as in the OTA updates lesson), then copy the new binary to this directory. The next time a node checks for an OTA update, it reads the version from the image header and downloads and installs the firmware only if that version differs from the one it is running.
 
 ### Step 5: Verify End-to-End
 
@@ -1859,7 +1969,7 @@ When you rebuild a project with changes, copy the new binary to this directory. 
 3. Within a few seconds, the indoor OLED should display the temperature, humidity, soil moisture, and battery voltage
 4. Open a browser and navigate to the indoor node's IP address (shown in the serial log). The web dashboard should display the same values
 5. Wait 5 minutes for the next outdoor node wake cycle. The display should update and the "last update" counter should reset
-6. Test the last will: disconnect the outdoor node's battery. After the MQTT keep-alive timeout (15 seconds), the status on the display should change from "ON" to "OFF"
+6. Test the last will: disconnect the outdoor node's battery during the few seconds it is connected (just after "MQTT connected" appears in its log). After 1.5 times the MQTT keep-alive (about 23 seconds), the status on the display should change from "ON" to "OFF". A battery removed during deep sleep does not trigger the will, because the node disconnected cleanly before sleeping
 </Steps>
 
 ### Testing with MQTT Command-Line Tools
@@ -1889,34 +1999,34 @@ home/outdoor/battery 3.12
 <InArticleAd />
 
 
-Before deploying this system in a real environment (garden, greenhouse, rooftop), review each item in this checklist. The capstone code already handles many of these, but some require configuration or hardware decisions beyond the firmware.
+Before you install this system in a real place (a garden, a greenhouse, a roof), go through this checklist. The capstone code already covers many items. Others need a setting or a hardware decision.
 
 ### Watchdog and Recovery
 
 | Item | Status in Capstone Code | Notes |
 |------|------------------------|-------|
 | Task watchdog on main task | Yes (both nodes) | Outdoor: 30s, indoor: 60s |
-| Wi-Fi reconnection | Yes (event handler retries) | Outdoor: 5 retries then sleep. Indoor: 10 retries |
+| Wi-Fi reconnection | Yes (event handler retries) | Outdoor: 5 retries then sleep. Indoor: retries without limit |
 | MQTT auto-reconnect | Yes (ESP-MQTT library default) | Library reconnects automatically on disconnect |
 | Sensor read failure handling | Yes (DHT22 retry, error values) | Publishes -999 if sensor fails, so dashboard shows something is wrong |
-| Last will message | Yes (both nodes) | Broker publishes offline status if node disconnects ungracefully |
+| Last will message | Yes (both nodes) | The broker publishes the offline status if a node is lost while connected. For the sleeping node, watch the age of the last update |
 
 ### OTA and Firmware Safety
 
 | Item | Status | Notes |
 |------|--------|-------|
 | Dual OTA partitions | Yes (partition table config) | Factory + OTA_0 + OTA_1 |
-| Rollback on failed boot | Yes (`esp_ota_mark_app_valid`) | New firmware must boot successfully or bootloader reverts |
-| Version comparison before OTA | Partial | The `esp_https_ota` function checks the binary header. For strict version comparison, add a version endpoint on the OTA server |
-| OTA over TLS | Configurable | Use `https://` URL and embed the server certificate |
+| Rollback on failed boot | Partly (`esp_ota_mark_app_valid_cancel_rollback`) | Firmware that resets before it reaches this call is rolled back. The outdoor node calls it before any test, so add a self-test before real use |
+| Version comparison before OTA | Yes | `esp_https_ota_get_img_desc` reads the version from the image header, and the download continues only if it differs from the running version. Raise `PROJECT_VER` for every release |
+| OTA over TLS | Configurable | The default is plain `http://` on the local network. For TLS, use an `https://` URL and embed the server certificate |
 
 ### Power and Battery
 
 | Item | Notes |
 |------|-------|
-| Deep sleep current | Measure with a multimeter. ESP32 DevKitC has onboard USB-UART chip that draws extra current. For production, use a bare ESP32 module |
-| Battery voltage monitoring | Included in firmware. Set a low-battery threshold (e.g., 2.2V for 2x AA) and publish a warning |
-| Power supply decoupling | Add a 100uF capacitor near the ESP32 VIN pin to handle Wi-Fi transmit current spikes |
+| Deep sleep current | Measure it with a multimeter. On a DevKitC the regulator and the USB-UART chip draw milliamps while the chip sleeps, which cuts the battery life to days. For real use, use a bare ESP32 module. The battery divider adds 15 uA |
+| Battery voltage monitoring | Included in firmware. Set a low-battery threshold (e.g., 2.4V for 2x AA, since the ESP32 needs at least 2.3V) and publish a warning |
+| Power supply decoupling | Add a 100uF capacitor near the ESP32 3.3V pin (where the battery connects) to handle Wi-Fi transmit current spikes |
 | Sensor power gating | For even lower sleep current, power the DHT22 and soil sensor through a GPIO or MOSFET so they draw zero current during sleep |
 
 ### Data Integrity and Storage
@@ -1925,7 +2035,7 @@ Before deploying this system in a real environment (garden, greenhouse, rooftop)
 |------|-------|
 | NVS wear leveling | The ESP-IDF NVS library handles wear leveling automatically. Avoid writing to NVS on every wake cycle; use RTC memory for counters |
 | Retained messages | All sensor topics use retained messages so that a rebooted subscriber gets the latest data immediately |
-| Message ordering | QoS 1 guarantees delivery but not strict ordering. For sensor data this is acceptable because each message is timestamped by topic |
+| Message ordering | QoS 1 guarantees delivery, not order. For these readings that is acceptable: each topic holds only the latest value. The messages carry no time, so the display counts the age of the last update itself |
 
 ### Security
 
@@ -1933,8 +2043,8 @@ Before deploying this system in a real environment (garden, greenhouse, rooftop)
 |------|-------|
 | TLS for MQTT | Configured in both nodes. Verify the broker certificate is correct |
 | Flash encryption | Enable in development mode first (`idf.py menuconfig`, Security Features). This prevents reading firmware from the flash chip |
-| Secure boot v2 | Prevents flashing unauthorized firmware. Enable after flash encryption is working. See Lesson 7 for details |
-| MQTT credentials | Stored in NVS via menuconfig. For production, use per-device certificates (X.509 client authentication) instead of shared passwords |
+| Secure boot v2 | Prevents flashing unauthorized firmware. Enable after flash encryption is working. It cannot be undone: see the [OTA and secure boot lesson](/education/embedded-programming-esp32/ota-updates-secure-boot/) |
+| MQTT credentials | Compiled into the firmware via menuconfig. For production, use per-device certificates (X.509 client authentication) instead of shared passwords |
 
 ### Enclosure and Environment
 
@@ -1945,7 +2055,7 @@ Before deploying this system in a real environment (garden, greenhouse, rooftop)
 | Temperature range | The ESP32 operates from -40 to 85 degrees Celsius. Batteries are the limiting factor; lithium cells perform better in cold weather than alkaline |
 
 :::tip[Instrument it]
-A sensor network is only as good as where its nodes sit. Put each node where the variable actually lives, not where the WiFi is strongest: the temperature node in the air the equipment breathes, the humidity node away from a vent that dries it out, the motion node with a clear line of sight. Then make it survive the place, a sealed enclosure with the sensor vented to ambient, an antenna clear of metal, and a battery budget that matches the reporting rate. Once placed and housed, an ESP32 node can [stream from anywhere](https://siliconwit.io) over WiFi, cellular, or LoRaWAN.
+A sensor network is only as good as the places where its nodes sit. Put each node where the quantity you want really is, not where the Wi-Fi is strongest: the temperature node in the air that the equipment takes in, the humidity node away from a vent that dries it. Then make it last in that place: a sealed enclosure with the sensor open to the air, an antenna clear of metal, and a battery budget that matches the reporting rate. If a node later switches a pump or a valve, keep the limits that protect the equipment in the firmware of that node, where they work without a network. The broker and the screen are for oversight, alerts and records. A node placed and housed like this can [report from anywhere](https://siliconwit.io).
 :::
 
 ## Exercises
@@ -1955,19 +2065,19 @@ A sensor network is only as good as where its nodes sit. Put each node where the
 
 <CardGrid>
 <Card title="Exercise 1: Add a Third Node" icon="puzzle">
-Add a second outdoor sensor node (e.g., a different room or a balcony) that publishes to `home/balcony/temperature`, `home/balcony/humidity`, etc. Modify the indoor display node to cycle between outdoor and balcony readings every 3 seconds on the OLED, and add a second page to the web dashboard. You will need to subscribe to `home/+/temperature` using the MQTT single-level wildcard.
+Add a second outdoor node (for example on a balcony) that publishes to `home/balcony/temperature`, `home/balcony/humidity` and so on. The indoor node shows outdoor and balcony readings in turn, 3 seconds each, on the OLED, and the web dashboard gets a second page. Subscribe to `home/+/temperature` with the MQTT single-level wildcard.
 </Card>
 
 <Card title="Exercise 2: Historical Data Logging" icon="puzzle">
-Add a circular buffer in the indoor node's PSRAM (or regular RAM if no PSRAM) that stores the last 24 hours of temperature readings (one per 5-minute cycle = 288 entries). Serve a `/history` endpoint on the HTTP server that returns the buffer as a JSON array. Bonus: render a simple ASCII chart or a sparkline on the OLED showing the temperature trend over the last few hours.
+Keep the last 24 hours of temperature readings (one per 5-minute cycle: 288 entries) in a circular buffer in the indoor node's PSRAM, or ordinary RAM if it has none. Serve them at `/history` as a JSON array. Bonus: draw the trend of the last few hours on the OLED as a small line chart.
 </Card>
 
 <Card title="Exercise 3: Alert Notifications" icon="puzzle">
-Add a threshold check in the indoor display node: if soil moisture drops below 20% or battery drops below 2.3V, publish an alert to `home/outdoor/alert` with QoS 2. Set up a phone app (such as MQTT Dashboard for Android or MQTTool for iOS) that subscribes to this alert topic and shows a push notification. Flash an indicator on the OLED when an alert is active.
+Add a threshold check in the indoor display node: if soil moisture drops below 20% or battery drops below 2.4V, publish an alert to `home/outdoor/alert` with QoS 2. Set up a phone app (such as MQTT Dashboard for Android or MQTTool for iOS) that subscribes to this alert topic and shows a push notification. Flash an indicator on the OLED when an alert is active.
 </Card>
 
 <Card title="Exercise 4: Encrypted Configuration" icon="puzzle">
-Store the Wi-Fi SSID, password, and MQTT credentials in NVS instead of hardcoding them in sdkconfig. Write a provisioning mode that starts a BLE GATT server (from Lesson 6) on the first boot, allowing you to configure credentials from a phone app. Once configured, the node reboots into normal operation. This removes the need to recompile firmware to change networks.
+Store the Wi-Fi SSID, password and MQTT credentials in NVS, not in sdkconfig. On the first boot, a provisioning mode starts a BLE GATT server (as in the [BLE lesson](/education/embedded-programming-esp32/bluetooth-low-energy-ble/)) so a phone app can set them; the node then reboots into normal operation. A new network then needs no new firmware.
 </Card>
 </CardGrid>
 
@@ -1976,11 +2086,15 @@ Store the Wi-Fi SSID, password, and MQTT credentials in NVS instead of hardcodin
 <InArticleAd />
 
 
-This capstone brought together every major topic from the course. The outdoor sensor node combines GPIO sensor reading (Lesson 2), Wi-Fi connectivity (Lesson 3), MQTT publishing with TLS (Lesson 5), deep sleep with RTC memory (Lesson 8), and OTA updates with rollback protection (Lesson 7). The indoor display node adds I2C peripheral driving, FreeRTOS multitasking, HTTP server hosting (Lesson 4), and continuous MQTT subscription. Together they form a complete IoT deployment that you can extend, harden, and adapt to real projects.
+You joined the parts of the course into one system of two nodes.
 
-The key architectural decisions: keeping MQTT topics flat and retained for simplicity, using QoS 1 as the pragmatic middle ground, separating the two nodes so each can be updated and debugged independently, and building in offline detection through last will messages. These patterns apply whether you are monitoring a garden, a greenhouse, an industrial process, or a building HVAC system.
+- The outdoor node is a program that runs once per wake: read the sensors, connect to Wi-Fi, publish by MQTT over TLS, check for an update, sleep. RTC memory carries its counters across the sleep.
+- The indoor node is the opposite: tasks that never end, for the MQTT subscription, the I2C display, the HTTP server and the OTA check, with a mutex around the values they share.
+- The nodes meet only at the broker. Retained topics give a restarted display the last values at once, and QoS 1 confirms each reading without a long time awake.
+- The system shows its own faults: an impossible value for a failed sensor, a last will for a node lost while connected, and the age of the last update for a node that no longer wakes.
+- The checklist lists what is still open before real use, above all the sleep current of the board and a self-test before new firmware is marked valid.
 
-From here, the exercises point toward the kinds of extensions you will encounter in production: multi-node networks, historical data, alerting, and secure provisioning. Each of those builds directly on the foundation this course has established.
+The same design serves a garden, a greenhouse, a cold room or a building.
 
 <EmbeddedProgrammingEsp32Comments />
 

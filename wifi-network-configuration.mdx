@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingEsp32Comments from '../../../../components/embedded-programming-esp32/EmbeddedProgrammingEsp32Comments.astro';
 
-Hardcoding Wi-Fi credentials into firmware means reflashing every time the network changes, and a naive blocking connect loop leaves your device unresponsive if the access point is down. Production Wi-Fi code needs an event-driven architecture that handles disconnections, retries, and credential provisioning without freezing the main application. In this lesson you will master the ESP-IDF Wi-Fi driver: connect as a station, run as an access point, provision credentials over SmartConfig (no hardcoding), and scan the radio spectrum. The project is a portable Wi-Fi signal mapper that builds a table of every nearby access point and serves the results as a self-hosted webpage. #ESP32 #WiFi #Networking
+A customer changes the router password, and every unit must come back to be programmed again, because the password was written into the firmware. Or the router restarts at night, and the device stops for good, because its code waited in a loop for a network that was not there. Wi-Fi fails often, and firmware must expect it. In this lesson you learn how the ESP32 reports what the network is doing, how it joins a network and how it makes its own, and how a phone can give it the password without a cable. The project is a signal mapper: it lists every Wi-Fi network in range with its strength and shows the list as a web page. #ESP32 #WiFi #Networking
 
 ## What We Are Building
 
 <Card title="Wi-Fi Signal Mapper" icon="star">
-A portable Wi-Fi survey tool. The ESP32 starts in STA+AP mode: it connects to your home network for internet access while simultaneously running a soft AP you can join from any device. It performs periodic Wi-Fi scans, records RSSI, channel, SSID, and auth mode for every detected access point, and serves a live HTML table on its built-in HTTP server. Refresh the page to see updated scan results.
+A portable Wi-Fi survey tool. The ESP32 is at once a station (STA) on your own network and an access point (AP) with a small network of its own that a phone can join. Every 10 seconds it scans and records each network's name (SSID), signal strength (RSSI), channel and type of security. A web server on the ESP32 shows the list as a table.
 </Card>
 
 **Project specifications:**
@@ -39,7 +39,7 @@ A portable Wi-Fi survey tool. The ESP32 starts in STA+AP mode: it connects to yo
 |-----------|-------|
 | MCU | ESP32 DevKitC |
 | Wi-Fi Mode | STA+AP (simultaneous station and access point) |
-| Scan Interval | Every 10 seconds (configurable via menuconfig) |
+| Scan Interval | Every 10 seconds (set by `SCAN_INTERVAL_MS`) |
 | Data Collected | SSID, BSSID, RSSI (dBm), channel, auth mode |
 | Max APs Tracked | 30 (sorted by signal strength) |
 | Web Interface | HTTP server on port 80, auto-refresh HTML table |
@@ -51,7 +51,7 @@ A portable Wi-Fi survey tool. The ESP32 starts in STA+AP mode: it connects to yo
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
-| U1 | ESP32 DevKitC | 1 | Same board from previous lessons |
+| U1 | ESP32 DevKitC | 1 | The board you used for the lamp projects |
 | | USB cable | 1 | For power and initial flashing |
 | | Wi-Fi network | 1 | Any 2.4 GHz network for STA mode |
 
@@ -60,37 +60,41 @@ A portable Wi-Fi survey tool. The ESP32 starts in STA+AP mode: it connects to yo
 <InArticleAd />
 
 
-The ESP32 Wi-Fi stack runs on a dedicated task created internally by `esp_wifi_start()`. Your application code never calls Wi-Fi functions from an ISR or directly manipulates the radio hardware. Instead, you interact with the driver through an event loop: you register handler functions, call API functions like `esp_wifi_connect()`, and the driver posts events (connected, disconnected, got IP) back to your handlers asynchronously.
+Joining a network takes seconds and can fail at any step. If `esp_wifi_connect()` waited for the result, your whole program would stand still. So it only starts the work and returns at once. The result comes later as an event: a short message such as "connected", "disconnected" or "got an IP address".
+
+It is like a food counter that gives you a number: you sit down, and your number is called. In ESP-IDF, the function that runs when your number is called is an event handler.
+
+The Wi-Fi driver runs in its own task, created by `esp_wifi_init()`. Your code never touches the radio: it calls driver functions and receives events.
 
 ```text
- ESP32 Wi-Fi Stack Layers
  ┌──────────────────────────────────┐
- │       Application Code          │
- │   (event handlers, API calls)   │
+ │  Your code                       │
+ │  calls functions, handles events │
  ├──────────────────────────────────┤
- │       ESP-IDF Event Loop        │
- │  (WIFI_EVENT, IP_EVENT posts)   │
+ │  Event loop                      │
+ │  carries WIFI_EVENT and IP_EVENT │
  ├──────────────────────────────────┤
- │      lwIP (TCP/IP Stack)        │
- │  (sockets, DHCP, DNS, mDNS)    │
+ │  TCP/IP stack (lwIP)             │
+ │  IP addresses, sockets, DNS      │
  ├──────────────────────────────────┤
- │     Wi-Fi Driver (closed-src)   │
- │  (802.11 MAC, scan, auth)       │
+ │  Wi-Fi driver                    │
+ │  scan, join, security            │
  ├──────────────────────────────────┤
- │      Wi-Fi Hardware (PHY)       │
- │  (2.4 GHz radio, antenna)       │
+ │  Radio, 2.4 GHz                  │
  └──────────────────────────────────┘
 ```
 
 ### The Event Loop Model
 
-ESP-IDF uses a default event loop for system events. The sequence for any Wi-Fi operation looks like this:
+The event loop is a task that takes events one at a time and calls the handlers registered for each. Every Wi-Fi program follows the same order:
 
 1. Create the default event loop with `esp_event_loop_create_default()`.
-2. Register handler functions for the events you care about.
+2. Register handler functions for the events you need.
 3. Initialize the Wi-Fi driver with `esp_wifi_init()`.
-4. Configure the mode (STA, AP, or both) and call `esp_wifi_start()`.
-5. The driver posts events to the loop; your handlers run in the event task context.
+4. Set the mode (STA, AP, or both) and call `esp_wifi_start()`.
+5. The driver posts events to the loop, and the loop calls your handlers.
+
+The states below are the life of one station connection. "Connected" and "GotIP" differ: Connected means the radio link exists, and only after the router's DHCP service has given the device an IP address can it send data.
 
 ```mermaid
 %%{init: {'flowchart': {'curve': 'linear'}}}%%
@@ -105,11 +109,11 @@ stateDiagram-v2
     Connected --> Disconnected : STA_DISCONNECTED
     GotIP --> Connected : IP lost
     GotIP --> Disconnected : STA_DISCONNECTED
-    Disconnected --> Scanning : Auto-reconnect\n(retry with backoff)
+    Disconnected --> Scanning : Auto-reconnect\n(limited retries)
     Disconnected --> Idle : esp_wifi_stop()
 ```
 
-Here is the minimal initialization sequence:
+The shortest initialization:
 
 ```c
 #include "esp_wifi.h"
@@ -138,11 +142,11 @@ wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 esp_wifi_init(&cfg);
 ```
 
-The `WIFI_INIT_CONFIG_DEFAULT()` macro fills in sensible defaults for buffer sizes, task priorities, and internal resource allocation. You almost never need to change these values.
+`WIFI_INIT_CONFIG_DEFAULT()` fills in buffer sizes and task priorities.
 
 ### Event Handler Registration
 
-You register handlers for two event bases: `WIFI_EVENT` (connection state changes) and `IP_EVENT` (IP address assignment). Each handler receives the event ID and a pointer to event-specific data:
+Events come in families, named event bases. Two matter here: `WIFI_EVENT` for the state of the radio link and `IP_EVENT` for the IP address. A handler receives the event ID and a pointer to the data of that event:
 
 ```c
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -177,18 +181,18 @@ esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                      &wifi_event_handler, NULL, &ip_handler);
 ```
 
-The handler runs in the context of the default event loop task, not your application task. Keep handlers short: set flags, post to queues, or call simple API functions. Do not block or run long computations inside a handler.
+All handlers run one after another in the one event loop task, and while one runs every other event waits. So keep a handler short: set a flag, put a message in a queue, or call a quick driver function. Never wait or do long work in a handler.
 
 ## Station Mode (STA)
 
 <InArticleAd />
 
 
-Station mode connects the ESP32 to an existing Wi-Fi access point, just like your phone or laptop connects to a router. This is the most common mode for IoT devices that need internet connectivity.
+In station mode the ESP32 joins an existing Wi-Fi network, as your phone does. Most connected devices work in this mode.
 
 ### Connecting to an Access Point
 
-After initializing the driver (as shown above), configure the SSID and password, then start the Wi-Fi subsystem:
+Give the driver the network name (SSID) and the password, then start Wi-Fi. The two strings below are placeholders:
 
 ```c
 wifi_config_t wifi_sta_config = {
@@ -204,14 +208,14 @@ esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config);
 esp_wifi_start();
 ```
 
-When `esp_wifi_start()` returns, the driver posts `WIFI_EVENT_STA_START`. Your event handler calls `esp_wifi_connect()`, which triggers the association process. If the connection succeeds, the events arrive in this order:
+After `esp_wifi_start()` the driver posts `WIFI_EVENT_STA_START`. Your handler answers with `esp_wifi_connect()`. If all goes well, two events follow:
 
-1. `WIFI_EVENT_STA_CONNECTED`: Layer 2 association is complete (radio link established).
-2. `IP_EVENT_STA_GOT_IP`: DHCP has assigned an IP address. The device is now fully connected.
+1. `WIFI_EVENT_STA_CONNECTED`: the radio link to the access point exists.
+2. `IP_EVENT_STA_GOT_IP`: the device has an IP address. Only now can it use the network.
 
 ### Auto-Reconnect Pattern
 
-Wi-Fi links drop for many reasons: the router reboots, the signal is temporarily blocked, or the ESP32 moves out of range. A robust firmware reconnects automatically:
+A Wi-Fi link drops when the router restarts, something blocks the signal, or the device moves out of range. The driver does not join again by itself. Your handler must ask, and count its attempts, so that a wrong password does not cause attempts without end:
 
 ```c
 static int s_retry_count = 0;
@@ -245,7 +249,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 ```
 
-The `disconnected_t` structure includes a `reason` field that tells you why the link dropped. Common reason codes include 2 (auth expired), 8 (station left), and 201 (no AP found). You can use these to decide whether to retry immediately or wait.
+The event data has a `reason` field that says why the link dropped. Read it before you retry: a missing network may return, but a wrong password will fail every time.
+
+A limit has a cost. A router that restarts at night is often off for a minute or more, and ten quick tries (about 2 s each) are used up in about 20 s, so the device stays offline until someone resets it. For a device that runs alone, do not stop for good when the network is missing: after the quick tries, wait longer between attempts (1, 2, 4 seconds and so on, up to about a minute) and keep trying.
 
 ### Common Disconnect Reasons
 
@@ -262,7 +268,7 @@ The `disconnected_t` structure includes a `reason` field that tells you why the 
 <InArticleAd />
 
 
-In AP mode the ESP32 creates its own Wi-Fi network that other devices can join. This is useful for initial configuration (a phone connects to the ESP32 to enter credentials), local-only networks, or serving a web interface without a router.
+In AP mode the ESP32 makes its own Wi-Fi network for other devices to join: a soft AP, made in software with no router. Use it to set up a new device from a phone, or to show a web page where there is no router.
 
 ### Creating a Soft AP
 
@@ -286,11 +292,13 @@ esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config);
 esp_wifi_start();
 ```
 
-The soft AP starts a built-in DHCP server automatically (configured by `esp_netif_create_default_wifi_ap()`). Clients that join receive IP addresses in the 192.168.4.x range, and the ESP32 itself is at 192.168.4.1 by default.
+The soft AP also runs a DHCP server, the service that gives each device that joins an IP address. Devices get addresses of the form 192.168.4.x, and the ESP32 itself is 192.168.4.1.
+
+This AP is open: it has no password, so anyone in range can join it and read the page. That is acceptable for a survey tool on your desk. A product needs a password on its AP.
 
 ### Client Tracking
 
-You can monitor which devices connect and disconnect by handling AP-specific events:
+Two events tell you when a device joins or leaves:
 
 ```c
 static void ap_event_handler(void *arg, esp_event_base_t event_base,
@@ -309,17 +317,16 @@ static void ap_event_handler(void *arg, esp_event_base_t event_base,
 }
 ```
 
-The `max_connection` field limits simultaneous clients. The ESP32 supports up to 10 connected stations in AP mode, though 4 is a practical default for memory-constrained applications.
+`max_connection` limits how many devices can join at once (up to 10).
 
 ## STA+AP Mode
 
 <InArticleAd />
 
 
-The ESP32 can run station and access point interfaces simultaneously. This is the mode we use for the signal mapper: the STA interface connects to your existing network (giving the ESP32 internet access if needed), while the AP interface lets you connect a phone or laptop directly to view results.
+The ESP32 can be a station and an access point at the same time. The signal mapper uses this mode: the station side joins your network, and the AP side lets a phone or laptop connect directly to see the results.
 
 ```text
- STA+AP Mode (Simultaneous)
  ┌──────────┐       ┌──────────────┐
  │  Home    │  STA  │              │  AP
  │  Router  │<─────>│    ESP32     │<─────>┌────────┐
@@ -364,18 +371,18 @@ esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 esp_wifi_start();
 ```
 
-There is one constraint to keep in mind: the ESP32 has a single radio, so both interfaces share the same channel. When the STA interface associates with a router on channel 6, the AP interface also operates on channel 6, regardless of what you set in the AP config. The `.channel` field in the AP config only applies when the STA interface is not connected.
+The two sides are two interfaces but one radio, which listens on one channel at a time, so the AP follows the station: if the station joins a router on channel 6, the AP moves to channel 6, whatever its configuration says. The `.channel` field of the AP applies only while the station is not connected. A phone on the AP may lose its link for a moment when this move happens.
 
 ## Wi-Fi Scanning
 
 <InArticleAd />
 
 
-The ESP32 can scan all 2.4 GHz channels (or a specific channel) and report every access point it detects. This is the core feature of our signal mapper.
+The 2.4 GHz band is divided into channels, 1 to 13 in most countries. In an active scan the ESP32 visits each channel, asks "who is here?", and listens briefly for access points to answer; the listening time per channel is the dwell time.
 
 ### Scan API
 
-A scan is a two-step process: start the scan, then retrieve results.
+A scan has two steps: start it, then fetch the results.
 
 ```c
 /* Configure scan parameters */
@@ -405,11 +412,11 @@ wifi_ap_record_t *ap_records = malloc(sizeof(wifi_ap_record_t) * ap_count);
 esp_wifi_scan_get_ap_records(&ap_count, ap_records);
 ```
 
-When the second parameter of `esp_wifi_scan_start()` is `true`, the function blocks until the scan completes (typically 1 to 3 seconds for all 13 channels). Setting it to `false` makes the scan asynchronous; a `WIFI_EVENT_SCAN_DONE` event is posted when it finishes.
+With `true` as the second argument, `esp_wifi_scan_start()` waits until the scan is complete. With 13 channels and up to 150 ms on each, that is about 2 seconds, so call it from your own task and never from an event handler. With `false` the function returns at once, and a `WIFI_EVENT_SCAN_DONE` event arrives when the scan ends.
 
 ### Interpreting Scan Results
 
-Each `wifi_ap_record_t` contains useful fields:
+Each `wifi_ap_record_t` describes one access point:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -419,7 +426,7 @@ Each `wifi_ap_record_t` contains useful fields:
 | `primary` | `uint8_t` | Primary channel number (1 to 13) |
 | `authmode` | `wifi_auth_mode_t` | Encryption type |
 
-The `authmode` field is an enum. Here is how to convert it to a human-readable string:
+The MAC address is the hardware address of the access point. Two access points can share one SSID, but each has its own BSSID. The `authmode` field is a number, and this function turns it into text:
 
 ```c
 static const char *auth_mode_str(wifi_auth_mode_t authmode)
@@ -440,7 +447,7 @@ static const char *auth_mode_str(wifi_auth_mode_t authmode)
 
 ### RSSI Interpretation
 
-RSSI values are negative numbers measured in dBm. Lower (more negative) values mean weaker signals:
+RSSI (received signal strength indicator) is the power of the arriving signal in dBm, a logarithmic scale on which 0 dBm is 1 milliwatt. A received Wi-Fi signal is far weaker than 1 milliwatt, so the number is negative, and nearer to zero is stronger: -40 dBm is stronger than -70 dBm.
 
 | RSSI Range | Signal Quality |
 |------------|---------------|
@@ -450,43 +457,35 @@ RSSI values are negative numbers measured in dBm. Lower (more negative) values m
 | -70 to -80 | Weak |
 | Below -80 | Very weak, unreliable |
 
-Each 3 dB decrease represents roughly half the power, and each 10 dB decrease represents roughly one-tenth the power. An AP at -40 dBm delivers about 100 times more power to the receiver than an AP at -60 dBm.
+On a logarithmic scale differences are ratios: 3 dB lower is about half the power, 10 dB lower is one tenth, and each further 10 dB divides by 10 again. An access point at -40 dBm delivers 100 times the power of one at -60 dBm.
 
 ## SmartConfig Provisioning
 
 <InArticleAd />
 
 
-Hardcoding the SSID and password works during development, but a real product needs a way to accept credentials at deployment time. SmartConfig solves this problem: a phone app (such as Espressif's ESP-Touch) broadcasts the network credentials using a clever encoding scheme, and the ESP32 picks them up over the air.
+Provisioning means giving a device the name and password of its network. A password in the firmware is fine while you develop, but a product must accept it at the place of use, with no keyboard. With SmartConfig, a phone app (Espressif's ESP-Touch) sends the name and password by radio to the ESP32.
 
 ### How SmartConfig Works
 
-The phone must already be connected to the target Wi-Fi network. The SmartConfig app encodes the SSID, password, and other parameters into the lengths of specially crafted UDP broadcast or multicast packets. The ESP32, in promiscuous mode, captures these packets, decodes the credential information from the packet lengths, and then connects to the network.
+The ESP32 is not yet on the network, so the phone cannot send it a normal message. But the ESP32 can observe one thing from outside the network: the length of each packet. Think of sealed envelopes: you cannot read the letter, but you can measure the envelope.
+
+The phone, already on the network, sends packets whose lengths spell out the SSID and password. The ESP32 listens to all Wi-Fi traffic in range (promiscuous mode), measures the lengths, and rebuilds the name and password from them.
 
 ```text
- SmartConfig Provisioning Flow
- ┌──────────┐    ┌──────────────┐    ┌──────────┐
- │  Phone   │    │   Wi-Fi AP   │    │  ESP32   │
- │ (app)    │    │   (Router)   │    │ (listen) │
- └────┬─────┘    └──────┬───────┘    └────┬─────┘
-      │  1. User enters       │           │
-      │     SSID+password     │           │
-      │                       │           │
-      │  2. Encode creds in   │           │
-      │     UDP packet lens   │           │
-      ├──────────────────────>│           │
-      │                       │  3. ESP32 │
-      │                       │  captures │
-      │                       ├──────────>│
-      │                       │           │
-      │                       │  4. Decode│
-      │                       │  & connect│
-      │                       │<──────────┤
-      │  5. Done notification │           │
-      │<──────────────────────────────────┤
+  Phone (app)          Router              ESP32
+      │                   │                  │
+      │ 1 packets whose   │                  │
+      │   lengths carry   │  2 hears them,   │
+      │   SSID + password │    reads lengths │
+      ├──────────────────>│ ─ ─ ─ ─ ─ ─ ─ ─ >│
+      │                   │                  │
+      │                   │  3 joins the     │
+      │                   │<─────────────────┤
+      │                   │    network       │
+      │ 4 "done" message  │                  │
+      │<──────────────────┴──────────────────┤
 ```
-
-This approach works without any pre-existing connection between the phone and the ESP32. The ESP32 only needs to be in a listening state.
 
 ### SmartConfig Implementation
 
@@ -537,9 +536,9 @@ static void smartconfig_event_handler(void *arg, esp_event_base_t event_base,
 
 ### Storing Credentials in NVS
 
-Once SmartConfig provides the credentials, you should save them so the device does not need provisioning on every reboot. The ESP-IDF Wi-Fi driver actually does this automatically: when you call `esp_wifi_set_config()`, it stores the configuration in NVS by default. On subsequent boots, calling `esp_wifi_start()` with the previously set configuration reconnects without SmartConfig.
+The device must not ask for the password after every restart. `esp_wifi_set_config()` saves the configuration in NVS, the store of saved values in flash, and on the next boot the driver finds it there and joins without SmartConfig.
 
-You can control this behavior with `esp_wifi_set_storage()`:
+`esp_wifi_set_storage()` chooses where the configuration is kept:
 
 ```c
 /* Store Wi-Fi config in flash (default behavior) */
@@ -549,14 +548,14 @@ esp_wifi_set_storage(WIFI_STORAGE_FLASH);
 esp_wifi_set_storage(WIFI_STORAGE_RAM);
 ```
 
-For the signal mapper, we use `WIFI_STORAGE_FLASH` so that the device remembers its configured network.
+The signal mapper uses `WIFI_STORAGE_FLASH`.
 
 ## Simple HTTP Server for Results
 
 <InArticleAd />
 
 
-The ESP-IDF includes a lightweight HTTP server (`esp_http_server`) that runs as a FreeRTOS task. It handles incoming connections, parses HTTP requests, and calls your registered URI handler functions. This is perfect for serving the scan results as a webpage.
+A browser asks for a page with an HTTP request, and a web server answers. ESP-IDF has a small one, `esp_http_server`, running as a FreeRTOS task. You register a handler function for each address (URI), and the server calls it when a browser asks for that address.
 
 ### Setting Up the Server
 
@@ -594,11 +593,11 @@ static httpd_handle_t start_webserver(void)
 }
 ```
 
-The `HTTPD_DEFAULT_CONFIG()` macro sets the server to listen on port 80 with a maximum of 7 concurrent connections. The `stack_size` of 8192 bytes gives enough room for building moderately sized HTML responses.
+`HTTPD_DEFAULT_CONFIG()` makes the server listen on port 80, the standard port for web pages, with at most 7 connections at once. The stack of 8192 bytes leaves room to build the page.
 
 ### Sending Chunked Responses
 
-For large HTML pages (like a table with 30 access points), use chunked transfer encoding to avoid allocating one giant buffer:
+A table of 30 access points is several kilobytes of HTML, too much to build in one buffer. A chunked response sends the page in pieces, using one small buffer again for each row:
 
 ```c
 static esp_err_t root_get_handler(httpd_req_t *req)
@@ -628,14 +627,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 }
 ```
 
-The `<meta http-equiv='refresh' content='10'>` tag tells the browser to reload the page every 10 seconds, giving you a live-updating display without any JavaScript.
+The `<meta http-equiv='refresh' content='10'>` tag tells the browser to load the page again every 10 seconds.
 
 ## Complete Firmware
 
 <InArticleAd />
 
 
-The full source code below combines everything: STA+AP mode, periodic scanning, and an HTTP server that displays results in a styled HTML table. The code is a single `main.c` file.
+This is the complete `main.c`: STA+AP mode, a scan every 10 seconds, and a web page with the results.
 
 ```c
 /* main.c -- Wi-Fi Signal Mapper
@@ -902,7 +901,8 @@ static void scan_task(void *pvParameters)
             count = MAX_AP_RECORDS;
         }
 
-        wifi_ap_record_t temp[MAX_AP_RECORDS];
+        /* static: 30 records are too large for the 4096-byte task stack */
+        static wifi_ap_record_t temp[MAX_AP_RECORDS];
         esp_wifi_scan_get_ap_records(&count, temp);
 
         /* Sort by RSSI descending (strongest first) */
@@ -1119,21 +1119,21 @@ void app_main(void)
 
 ### How the Firmware Works
 
-The firmware is organized into five cooperating layers:
+The firmware has five parts:
 
-1. **Wi-Fi initialization (`wifi_init`):** Creates both network interfaces, registers event handlers, configures STA+AP mode, and starts the driver. The STA interface attempts to connect using credentials from menuconfig (or previously stored SmartConfig credentials). The AP interface starts immediately with the SSID "ESP32-Mapper".
+1. `wifi_init` creates both interfaces, registers the handlers, sets STA+AP mode and starts the driver. The station tries the name and password from menuconfig, or the ones SmartConfig saved earlier. The AP "ESP32-Mapper" starts at once.
 
-2. **Event handlers:** Two handler functions process all Wi-Fi, IP, and SmartConfig events. The Wi-Fi handler manages connection state, auto-reconnect with a retry limit, and AP client tracking. The SmartConfig handler receives provisioned credentials and applies them.
+2. Two event handlers receive all Wi-Fi, IP and SmartConfig events. They reconnect up to 5 times, log devices that join the AP, and apply the name and password that SmartConfig delivers.
 
-3. **Scan task (`scan_task`):** Runs on core 0 in a loop. Every 10 seconds, it performs a blocking active scan across all channels, retrieves the results, sorts them by RSSI (strongest first), and copies them into a shared buffer protected by a mutex.
+3. `scan_task` runs in its own task, so its 2 second scan blocks nothing else. Every 10 seconds it scans, sorts the results with the strongest first, and copies them into a shared buffer.
 
-4. **HTTP server:** Registered on port 80, it serves a single page at `/`. The handler reads the shared scan buffer (under mutex), builds an HTML table with SSID, BSSID, channel, RSSI, signal strength bars, and authentication mode. The page includes a `<meta>` refresh tag that reloads every 10 seconds.
+4. The HTTP server answers at `/` on port 80. Its handler reads the shared buffer and sends the table.
 
-5. **SmartConfig task:** Waits 15 seconds for the STA interface to connect. If it connects (using stored or hardcoded credentials), the task exits. If not, it starts SmartConfig and waits for the user to provision credentials via the ESP-Touch phone app.
+5. The SmartConfig task waits 15 seconds for the station to connect. If it connects, the task ends. If not, it starts SmartConfig and waits for the ESP-Touch app.
 
 ### Thread Safety
 
-The scan results are shared between the scan task (writer) and the HTTP handler (reader). A mutex (`s_scan_mutex`) protects this shared state. The scan task holds the mutex only while copying sorted results into the global buffer. The HTTP handler holds it while reading the buffer to generate HTML. Both operations are fast, so contention is minimal.
+The scan task writes the shared buffer and the HTTP handler, a different task, reads it. Without protection, a page asked for in the middle of a copy gets half old and half new rows. A mutex is a lock that one task holds at a time: each task takes `s_scan_mutex` before it touches the buffer and gives it back after, for a short copy or read only, so neither waits long.
 
 ## CMakeLists.txt and Kconfig Files
 
@@ -1157,7 +1157,7 @@ idf_component_register(SRCS "main.c"
 
 ### main/Kconfig.projbuild
 
-This file adds custom configuration options to menuconfig so you can set the SSID and password without editing source code:
+This file adds your own entries to menuconfig, so the SSID and password never appear in the source code. The defaults are placeholders; the real values go into `sdkconfig`, which stays out of version control.
 
 ```
 menu "Wi-Fi Signal Mapper Configuration"
@@ -1226,14 +1226,16 @@ endmenu
 6. Watch the serial output for connection status:
    ```
    I (456) wifi_mapper: Wi-Fi Signal Mapper starting
-   I (462) wifi_mapper: Wi-Fi initialized in STA+AP mode
-   I (463) wifi_mapper: AP SSID: ESP32-Mapper (open, connect to access web UI)
-   I (468) wifi_mapper: HTTP server started on port 80
-   I (469) wifi_mapper: Initialization complete
-   I (470) wifi_mapper: Connect to AP 'ESP32-Mapper' and open http://192.168.4.1
-   I (1523) wifi_mapper: STA started, connecting...
-   I (3842) wifi_mapper: Got IP: 192.168.1.105
-   I (6503) wifi_mapper: Scan complete: 12 APs found
+   I (742) wifi_mapper: STA started, connecting...
+   I (745) wifi_mapper: Wi-Fi initialized in STA+AP mode
+   I (746) wifi_mapper: AP SSID: ESP32-Mapper (open, connect to access web UI)
+   I (752) wifi_mapper: HTTP server started on port 80
+   I (753) wifi_mapper: Initialization complete
+   I (754) wifi_mapper: Connect to AP 'ESP32-Mapper' and open http://192.168.4.1
+   I (1980) wifi_mapper: STA connected to AP
+   I (2890) wifi_mapper: Got IP: 192.168.1.105
+   I (3753) wifi_mapper: Scan task started on core 0
+   I (5870) wifi_mapper: Scan complete: 12 APs found
    ```
 
 7. View the results from a phone or laptop:
@@ -1244,7 +1246,7 @@ endmenu
 
 8. If the STA does not connect (wrong credentials or network not available):
    - Install the Espressif ESP-Touch app on your phone (available for iOS and Android).
-   - After 15 seconds, the serial log will show "Starting SmartConfig..."
+   - After 15 seconds, the serial log will show "STA not connected, starting SmartConfig..."
    - Open the ESP-Touch app, enter your Wi-Fi password, and tap "Confirm".
    - The ESP32 will receive the credentials, connect, and store them in flash for future boots.
 
@@ -1256,20 +1258,26 @@ endmenu
 <InArticleAd />
 
 
-1. **Add a JSON API endpoint.** Register a second URI handler at `/api/scan` that returns the scan results as a JSON array instead of HTML. Each element should include `ssid`, `bssid`, `rssi`, `channel`, and `auth` fields. Use `httpd_resp_set_type(req, "application/json")` and build the JSON string manually with `snprintf`. Test it with `curl http://192.168.4.1/api/scan` from a terminal.
+1. **Add a JSON API endpoint.** Register a second URI handler at `/api/scan` that returns the results as a JSON array, each element with `ssid`, `bssid`, `rssi`, `channel` and `auth`. Use `httpd_resp_set_type(req, "application/json")`, build the string with `snprintf`, and test with `curl http://192.168.4.1/api/scan`.
 
-2. **Implement scan history tracking.** Modify the scan task to keep the last 5 scan results for each BSSID (use a ring buffer per AP). Add a `/history` endpoint that shows a small table for each AP with its RSSI over the last 5 scans, so you can see whether signal strength is improving or degrading as you walk around.
+2. **Implement scan history tracking.** Keep the last 5 scan results for each BSSID (a ring buffer per AP). Add a `/history` endpoint with a small table per AP of its RSSI over the last 5 scans, so you see whether the signal improves or worsens as you walk around.
 
-3. **Add WPA2 security to the soft AP.** Change the AP configuration to use `WIFI_AUTH_WPA2_PSK` with a password set via menuconfig. Add a new Kconfig entry `CONFIG_AP_PASSWORD` with a default value. Test that unauthorized devices cannot connect. Note how the DHCP server behavior remains unchanged.
+3. **Add WPA2 security to the soft AP.** Use `WIFI_AUTH_WPA2_PSK` with a password from a new Kconfig entry, `CONFIG_AP_PASSWORD`, with a default value. Check that devices without the password cannot connect, and note that the DHCP server behaves as before.
 
-4. **Build a channel utilization chart.** After each scan, count how many APs are on each channel (1 through 13). Add an `/channels` endpoint that displays a simple horizontal bar chart using HTML and inline CSS, where each bar's width is proportional to the number of APs on that channel. This visualization helps identify the least congested channel for your own network.
+4. **Build a channel utilization chart.** After each scan, count the APs on each channel (1 to 13). Add a `/channels` endpoint that draws a horizontal bar chart in HTML and inline CSS, each bar as wide as its number of APs. It shows the least crowded channel for your own network.
 
 ## Summary
 
 <InArticleAd />
 
 
-You explored the ESP32 Wi-Fi driver architecture and its event-driven programming model. You learned how station mode connects to an existing network with auto-reconnect logic, how soft AP mode creates a local network with a built-in DHCP server, and how STA+AP mode runs both simultaneously on a single radio. You implemented Wi-Fi scanning to discover nearby access points and extract their SSID, RSSI, channel, and authentication mode. You used SmartConfig as a provisioning mechanism that lets a phone app send credentials over the air without any pre-existing connection. Finally, you built a complete Wi-Fi signal mapper that combines all of these features: periodic scanning, a styled HTML dashboard served by the ESP-IDF HTTP server, auto-refresh, mutex-protected shared state, and SmartConfig fallback for first-time setup.
+- Wi-Fi functions start work and return. The result arrives later as an event, and the device can use the network only after `IP_EVENT_STA_GOT_IP`.
+- All handlers share one task: keep them short, and do long work such as a scan in your own task.
+- The driver does not reconnect by itself. Reconnect in the handler, count the attempts, and read the reason.
+- In STA+AP mode there is one radio, so the AP uses the station's channel.
+- RSSI is in dBm: nearer to zero is stronger, and 10 dB less is one tenth of the power.
+- SmartConfig delivers the name and password from a phone, and the driver saves them in NVS.
+- Data shared by two tasks needs a mutex.
 
 <EmbeddedProgrammingEsp32Comments />
 
