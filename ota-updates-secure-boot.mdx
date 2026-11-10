@@ -426,7 +426,7 @@ So that the ESP32 can learn the version without the large file, put a small vers
 echo "1.1.0" > build/version.txt
 ```
 
-The ESP32 first fetches `version.txt` (a few bytes) and compares it with its own version. It downloads the image only if the two differ.
+The ESP32 first fetches `version.txt` (a few bytes) and compares it with its own version. It downloads the image only if the two differ, and only if that version has not already failed on this device (the rollback test below shows why).
 
 ## Flash Encryption (Development Mode)
 
@@ -844,6 +844,18 @@ static bool check_for_update(char *new_ver, size_t new_ver_len)
         return false;
     }
 
+    /* Skip a version that already failed here and was rolled back.
+     * Without this check the node downloads it again every minute,
+     * fails again, and erases 1.3 MB of flash each time. */
+    const esp_partition_t *bad = esp_ota_get_last_invalid_partition();
+    esp_app_desc_t bad_desc;
+    if (bad != NULL &&
+        esp_ota_get_partition_description(bad, &bad_desc) == ESP_OK &&
+        strcmp(bad_desc.version, new_ver) == 0) {
+        ESP_LOGW(TAG, "Version %s was rolled back before, skipping", new_ver);
+        return false;
+    }
+
     ESP_LOGI(TAG, "New firmware available: %s (current: %s)",
              new_ver, app_desc->version);
     return true;
@@ -958,11 +970,11 @@ static esp_err_t perform_ota_update(void)
 /* ---- OTA Check Task ---- */
 static void ota_task(void *pvParameter)
 {
-    /* Wait for Wi-Fi to be connected */
+    /* Wait up to 30 s for Wi-Fi, but never exit: a node that stops
+     * checking can never be repaired from a distance. Without a
+     * network, the checks below fail and are tried again each cycle. */
     if (!wifi_wait_connected(30000)) {
-        ESP_LOGE(TAG, "Wi-Fi not connected, OTA task exiting");
-        vTaskDelete(NULL);
-        return;
+        ESP_LOGW(TAG, "Wi-Fi not connected yet, OTA checks will retry");
     }
 
     while (1) {
@@ -1050,7 +1062,7 @@ At every start the firmware does five things in order:
 1. It prints the version, so the log shows which firmware is running.
 2. It starts Wi-Fi, which connects to your network.
 3. It checks the rollback state. On the first start after an OTA update the state is `PENDING_VERIFY`, and the self-test runs: it waits for Wi-Fi and reads the sensor. If both pass, the firmware is marked valid. If one fails, the device rolls back and restarts.
-4. It starts the OTA task. Every 60 seconds this FreeRTOS task fetches `version.txt`. If the version differs from its own, it downloads the image, writes it to the idle OTA slot, sets that slot as the boot partition and restarts.
+4. It starts the OTA task. Every 60 seconds this FreeRTOS task fetches `version.txt`. If the version differs from its own and has not already failed here, it downloads the image, writes it to the idle OTA slot, sets that slot as the boot partition and restarts. The task never ends, even when Wi-Fi is missing at the start. The Wi-Fi handler, however, stops after 5 tries, so a node in the field also needs the growing waits of the [Wi-Fi lesson](/education/embedded-programming-esp32/wifi-network-configuration/), or it stays offline, and out of reach of any update, until it is reset.
 5. It runs the normal work: the main loop reads the sensor every 10 seconds and logs the values.
 
 ## Building, Signing, and Flashing
@@ -1116,8 +1128,16 @@ To verify that rollback works, intentionally break the self-test:
 2. Set `PROJECT_VER` to `1.2.0` and rebuild.
 3. Update `version.txt` to `1.2.0` and restart the HTTP server.
 4. Watch the ESP32 download the broken firmware, reboot, fail the self-test, and roll back to version `1.1.0`.
-5. The device ends up running `1.1.0` again, and the next OTA check will try to download `1.2.0` again (and fail again). In production, you would fix the firmware and upload a corrected `1.2.0` or `1.3.0`.
+5. The device ends up running `1.1.0` again. At the next check the log shows `Version 1.2.0 was rolled back before, skipping`: `check_for_update()` compares the server's version with the one in the slot that failed (`esp_ota_get_last_invalid_partition()`), so the node does not download the broken image again every minute. Fix the firmware and publish it as `1.3.0`. A version rolled back for any reason is skipped, even when the cause was a router that was off during the self-test; publish it again under a new number.
 </Steps>
+
+### Check it
+
+A rollback that was never tested is a hope. Before you trust OTA on a node you cannot reach, prove three things on the bench:
+
+1. **The slot changed.** The boot log after an update must show the running partition at a new address: `factory` at 0x10000 before, `ota_0` at 0x160000 after the first update, `ota_1` at 0x2B0000 after the second.
+2. **A damaged image is refused.** Serve a cut copy of the next version (`head -c 500000 ota_sensor_node.bin > cut.bin`, renamed to `ota_sensor_node.bin`). The log must show `esp_ota_end failed`, and the node must keep running its old version with no restart.
+3. **A power cut is survived.** Pull the USB cable in the middle of a download and plug it back in. The node must start its old version, because `esp_ota_set_boot_partition()` was never reached.
 
 ### Complete Workflow with Security
 

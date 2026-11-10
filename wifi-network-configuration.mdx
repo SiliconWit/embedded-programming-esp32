@@ -793,6 +793,7 @@ static void smartconfig_event_handler(void *arg, esp_event_base_t event_base,
 
         ESP_LOGI(TAG, "SmartConfig SSID: %s", (char *)evt->ssid);
 
+        s_retry_count = 0;   /* the new network gets its own retries */
         esp_wifi_disconnect();
         esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
         esp_wifi_connect();
@@ -838,15 +839,19 @@ static void wifi_init(void)
     /* Set STA+AP mode */
     esp_wifi_set_mode(WIFI_MODE_APSTA);
 
-    /* Configure STA */
-    wifi_config_t sta_config = {
-        .sta = {
-            .ssid     = DEFAULT_STA_SSID,
-            .password = DEFAULT_STA_PASS,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+    /* Configure STA. Use the menuconfig network only when flash holds
+       none yet: setting it at every boot would overwrite the network
+       that SmartConfig saved. */
+    wifi_config_t sta_config = {0};
+    esp_wifi_get_config(WIFI_IF_STA, &sta_config);
+    if (sta_config.sta.ssid[0] == '\0') {
+        strlcpy((char *)sta_config.sta.ssid, DEFAULT_STA_SSID,
+                sizeof(sta_config.sta.ssid));
+        strlcpy((char *)sta_config.sta.password, DEFAULT_STA_PASS,
+                sizeof(sta_config.sta.password));
+        sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+    }
 
     /* Configure AP */
     wifi_config_t ap_config = {
@@ -1121,13 +1126,13 @@ void app_main(void)
 
 The firmware has five parts:
 
-1. `wifi_init` creates both interfaces, registers the handlers, sets STA+AP mode and starts the driver. The station tries the name and password from menuconfig, or the ones SmartConfig saved earlier. The AP "ESP32-Mapper" starts at once.
+1. `wifi_init` creates both interfaces, registers the handlers, sets STA+AP mode and starts the driver. It first reads the network saved in flash (`esp_wifi_get_config()`). Only if there is none does it use the name and password from menuconfig, so a network delivered by SmartConfig survives a restart. The AP "ESP32-Mapper" starts at once.
 
 2. Two event handlers receive all Wi-Fi, IP and SmartConfig events. They reconnect up to 5 times, log devices that join the AP, and apply the name and password that SmartConfig delivers.
 
 3. `scan_task` runs in its own task, so its 2 second scan blocks nothing else. Every 10 seconds it scans, sorts the results with the strongest first, and copies them into a shared buffer.
 
-4. The HTTP server answers at `/` on port 80. Its handler reads the shared buffer and sends the table.
+4. The HTTP server answers at `/` on port 80. Its handler reads the shared buffer and sends the table. It puts each network name into the page as it is. A network name is chosen by whoever owns that network, and a name such as `<b>x` would change your page. Before you leave the mapper on a site, replace `<`, `>`, `&` and `'` in each name with `&lt;`, `&gt;`, `&amp;` and `&#39;`.
 
 5. The SmartConfig task waits 15 seconds for the station to connect. If it connects, the task ends. If not, it starts SmartConfig and waits for the ESP-Touch app.
 
@@ -1252,6 +1257,14 @@ endmenu
 
 9. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
+
+### Check it
+
+A survey tool is only useful if its numbers agree with another instrument.
+
+1. **Against a phone.** Stand still with the board and a phone side by side, and open a Wi-Fi analyser app on the phone. Each network should appear in both lists on the same channel, with an RSSI within about 10 dB (the two antennas differ). A network that the ESP32 never shows is often on 5 GHz, which the ESP32 cannot hear.
+2. **Against distance.** Note the RSSI of your own router at 1 m, then at 4 m in open space. Four times the distance spreads the power over 16 times the area, so expect about 12 dB less (more through walls). A reading that does not change with distance means the page is not being refreshed.
+3. **Against a lost network.** Switch the router off for two minutes and on again. The log shows `reason=` codes, then the retries; with this firmware's 5 quick tries the station gives up, which is the limit the auto-reconnect section warns about. If you used SmartConfig, restart the board and check that it joins the network the phone gave it, not the one from menuconfig.
 
 ## Exercises
 

@@ -30,7 +30,7 @@ A sensor in a cold room, on a motor or in a field often has no Wi-Fi router in r
 ## What We Are Building
 
 <Card title="BLE Environmental Beacon" icon="star">
-A wireless sensor that a phone can find and read over Bluetooth Low Energy. The ESP32 reads the DHT22 and offers temperature and humidity in the standard layout for such data, the Environmental Sensing Service (ESS). Any BLE scanner app (nRF Connect, LightBlue) can find the device and read the values. A connected phone that asks for notifications receives every new reading without asking again. The lesson ends with BLE and Wi-Fi running together.
+A wireless sensor that a phone can find and read over Bluetooth Low Energy. The ESP32 reads the DHT22 and offers temperature and humidity in the standard layout for such data, the Environmental Sensing Service (ESS). Any BLE scanner app (nRF Connect, LightBlue) can find the device and read the values. A connected phone that asks for notifications receives every new reading without asking again. The lesson then explains how BLE and Wi-Fi share the radio, and the last exercise runs them together.
 </Card>
 
 **Project specifications:**
@@ -45,7 +45,7 @@ A wireless sensor that a phone can find and read over Bluetooth Low Energy. The 
 | Advertising Interval | 100 ms to 150 ms |
 | Notification Interval | Every 5 seconds (each new sensor reading) |
 | Connection Parameters | Min 7.5 ms, Max 30 ms, Latency 0 |
-| Coexistence | BLE + Wi-Fi simultaneous operation demonstrated |
+| Coexistence | Explained and enabled; BLE + Wi-Fi together in Exercise 4 |
 | Phone App | nRF Connect, LightBlue, or any GATT browser |
 
 ### Bill of Materials
@@ -75,6 +75,8 @@ The differences from Classic Bluetooth:
 | Range | ~10 m typical | ~10 m typical (up to 100 m open air) |
 | Topology | Point to point | Point to point, broadcast, mesh |
 | Use case | Audio, file transfer | Sensors, beacons, control |
+
+The power figures are for chips made only for BLE. The ESP32 is a larger chip: its radio draws about 100 to 130 mA while it receives or transmits, and the processor tens of milliamperes while awake. This lesson's sensor never sleeps, so on a battery it lasts days, not months. Months need the sleep modes of the [power management lesson](/education/embedded-programming-esp32/power-management-deep-sleep/), or a dedicated BLE chip.
 
 Your firmware meets BLE through two parts. GAP answers "how does a phone find this device and connect to it?"; GATT answers "once connected, what data is there and how is it read?". Think of a shop: GAP is the sign over the door, GATT the counter inside, where each item has its place. The library handles the layers below, which carry the packets.
 
@@ -358,8 +360,10 @@ When a client reads a characteristic, NimBLE calls the access callback. The call
 
 ```c
 /* Current sensor values (updated by the sensor task) */
-static int16_t current_temp_ble = 0;   /* Temperature in 0.01 C units */
-static uint16_t current_humi_ble = 0;  /* Humidity in 0.01% units */
+/* Start at the standard "value is not known" (0x8000 and 0xFFFF), so a
+   phone that reads before the first reading sees no false 0.00 C */
+static int16_t current_temp_ble = INT16_MIN;  /* Temperature in 0.01 C units */
+static uint16_t current_humi_ble = 0xFFFF;    /* Humidity in 0.01% units */
 
 static int gatt_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                           struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -400,15 +404,16 @@ The DHT22 driver returns temperature as a float in degrees Celsius and humidity 
 ```c
 static void convert_sensor_to_ble(float temp_c, float humi_pct)
 {
-    /* Temperature: multiply by 100 to get 0.01 C resolution */
-    current_temp_ble = (int16_t)(temp_c * 100.0f);
+    /* Temperature: multiply by 100 to get 0.01 C resolution.
+       Round (math.h): a plain cast cuts off, and 20.3 becomes 2029. */
+    current_temp_ble = (int16_t)lroundf(temp_c * 100.0f);
 
     /* Humidity: multiply by 100 to get 0.01% resolution */
-    current_humi_ble = (uint16_t)(humi_pct * 100.0f);
+    current_humi_ble = (uint16_t)lroundf(humi_pct * 100.0f);
 }
 ```
 
-A reading of 24.3 C and 61.8% gives `2430` and `6180`.
+A reading of 24.3 C and 61.8% gives `2430` and `6180`. The rounding matters: a float cannot hold 20.3 exactly, `20.3f * 100` is a little below 2030, and a cast that cuts off the fraction sends 2029.
 
 ## Notifications
 
@@ -578,7 +583,7 @@ The ESP32 has one 2.4 GHz radio, shared by Wi-Fi and Bluetooth. It cannot serve 
 
 ### How Coexistence Works
 
-When BLE and Wi-Fi are both active, the arbiter follows these rules:
+When BLE and Wi-Fi are both active, the arbiter works in outline like this (the exact rules are inside Espressif's closed radio library):
 
 1. Wi-Fi beacons and BLE advertising come first, because a link that misses them is lost.
 2. Wi-Fi data comes first while a TCP transfer is running.
@@ -608,6 +613,8 @@ In code, set the preference with:
 
 esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 ```
+
+In ESP-IDF 5.x this function is marked deprecated (it still builds, with a warning), and balance is already the default, so most projects leave the call out.
 
 ### Practical Tips for Coexistence
 
@@ -668,6 +675,7 @@ idf_component_register(
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -705,8 +713,9 @@ static uint16_t temp_chr_val_handle;
 static uint16_t humi_chr_val_handle;
 
 /* Sensor values in BLE format */
-static int16_t  current_temp_ble = 0;   /* 0.01 C units */
-static uint16_t current_humi_ble = 0;   /* 0.01 % units */
+/* Until the first good reading: the standard "value is not known" */
+static int16_t  current_temp_ble = INT16_MIN;   /* 0.01 C units, 0x8000 */
+static uint16_t current_humi_ble = 0xFFFF;      /* 0.01 % units */
 
 /* ------------------------------------------------------------------ */
 /* DHT22 Bit-Bang Driver                                              */
@@ -1050,8 +1059,8 @@ static void sensor_task(void *param)
     while (1) {
         if (dht22_read(&temperature, &humidity)) {
             /* Convert to BLE format */
-            current_temp_ble = (int16_t)(temperature * 100.0f);
-            current_humi_ble = (uint16_t)(humidity * 100.0f);
+            current_temp_ble = (int16_t)lroundf(temperature * 100.0f);
+            current_humi_ble = (uint16_t)lroundf(humidity * 100.0f);
 
             ESP_LOGI(TAG, "Sensor: %.1f C, %.1f%% RH | BLE: temp=%d, humi=%d",
                      temperature, humidity,
@@ -1170,13 +1179,21 @@ Test the sensor with nRF Connect, a free app for Android and iOS.
 8. Look at the serial monitor of the ESP32. The log shows the connection and the subscription.
 </Steps>
 
+### Check it
+
+The phone shows a number; check that it is the number the sensor measured.
+
+1. **The bytes.** Read Temperature once in nRF Connect and compare the raw bytes with the serial log. A log line `temp=2430` must appear as `7E 09` (0x097E = 2430, low byte first). Bytes in the other order (`09 7E`) mean the value was sent high byte first, and a phone app that follows the standard would show 322.65 °C (it reads 0x7E09 = 32265).
+2. **The rate.** With notifications on, count the updates for one minute: at one reading every 5 seconds you should see 12. A reading that fails its checksum sends nothing, so 10 or 11 is normal; far fewer means the DHT22 fails often.
+3. **The range.** Walk away with the phone and watch the RSSI that nRF Connect shows for the device. Note the distance at which notifications stop. Indoors, through walls, it is often well under the 10 m of the table: measure it where the sensor will be used.
+
 ### Troubleshooting
 
 | Problem | Possible Cause | Solution |
 |---------|----------------|----------|
 | Device not found in scan | Advertising not started | Check serial output for "Advertising started" message |
 | Connection drops immediately | Parameter negotiation failure | Try removing the `ble_gap_update_params` call |
-| Read returns 0 | Sensor not initialized yet | Wait for the first DHT22 reading (2 second warm-up) |
+| Read returns `00 80` (temperature) or `FF FF` (humidity) | No good reading yet: the standard "value is not known" | Wait for the first DHT22 reading (2 second warm-up). If it stays, check the DHT22 wiring |
 | Notifications not received | CCCD not written | Tap the notification icon in nRF Connect (not just the read icon) |
 | "GATT Error 0x0E" | The access callback returned `BLE_ATT_ERR_UNLIKELY` (0x0E) | Check the UUID and operation handled in `gatt_access_cb`. The default MTU (23 bytes, 20 of them for the value) is already enough for 2-byte values |
 

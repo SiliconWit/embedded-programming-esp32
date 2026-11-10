@@ -162,7 +162,7 @@ You need a broker that both the ESP32 and your phone can reach over the internet
 5. The free tier supports up to 100 connections and 10 GB of traffic per month, which is more than enough for development and small deployments.
 </Steps>
 
-**Alternatives:** [SiliconWit IoT](https://mqtt.siliconwit.io/) provides an MQTT broker for course projects. EMQX Cloud ([www.emqx.com/en/cloud](https://www.emqx.com/en/cloud)) offers a similar free tier. The ESP-IDF code in this lesson works with any standard MQTT broker.
+**Alternatives:** [SiliconWit.io](https://mqtt.siliconwit.io/) also accepts MQTT over TLS from devices, but with its own topic names (telemetry on `d/<device id>/t`), so the topics of this lesson must be changed to use it. EMQX Cloud ([www.emqx.com/en/cloud](https://www.emqx.com/en/cloud)) offers a similar free tier. The ESP-IDF code in this lesson works with any standard MQTT broker.
 
 ## ESP-MQTT Client Basics
 
@@ -441,6 +441,8 @@ The voltage falls as the soil gets wetter, so the formula measures how far the v
 
 This percentage is a position between your two end points. It is not the water content of the soil in percent.
 
+One ADC reading can differ from the next by tens of millivolts, and 15 mV is already one percent here (1500 mV for 100 percent). For a steadier value, take 16 readings in a row and publish their average. Note also that the dry value of 2700 mV lies above 2450 mV, where the ADC is less accurate: the 0 percent end is the least certain one.
+
 ## Publishing Sensor Data
 
 <InArticleAd />
@@ -462,17 +464,18 @@ static void publish_moisture(esp_mqtt_client_handle_t client,
              moisture_pct, voltage_mv,
              (long long)(esp_timer_get_time() / 1000000));
 
-    int msg_id = esp_mqtt_client_publish(client,
+    int msg_id = esp_mqtt_client_enqueue(client,
                                           "home/garden/moisture",
                                           payload, 0,
-                                          1,   /* QoS 1 */
-                                          0);  /* No retain */
+                                          1,      /* QoS 1 */
+                                          0,      /* No retain */
+                                          true);  /* Keep in outbox */
     ESP_LOGI(TAG, "Published moisture=%d%%, msg_id=%d",
              moisture_pct, msg_id);
 }
 ```
 
-`esp_mqtt_client_publish()` returns a message ID for QoS 1 and QoS 2, and 0 for QoS 0. A message ID means only that the client accepted the message for sending: not that the broker has it, and nothing about any subscriber. The last parameter is the retain flag. Readings are not retained here, because an old reading shown as new would mislead.
+The function uses `esp_mqtt_client_enqueue()`, not `esp_mqtt_client_publish()`. Publish sends in the task that calls it and can block for up to 10 seconds on a slow network. These functions are called from a timer callback (below), and a timer callback must never block: one esp_timer task runs the timer callbacks of the whole system, including those of other drivers, and a blocked callback delays them all. Enqueue puts the message in the client's outbox (the last argument, `true`, keeps it there until it is sent), and the MQTT task sends it. Both return a message ID, or a negative value on failure. A message ID means only that the client accepted the message for sending: not that the broker has it, and nothing about any subscriber. The last parameter is the retain flag. Readings are not retained here, because an old reading shown as new would mislead.
 
 ### Alert Publishing
 
@@ -489,11 +492,11 @@ static void publish_alert(esp_mqtt_client_handle_t client,
              "Water your plant!\"}",
              moisture_pct);
 
-    esp_mqtt_client_publish(client,
+    esp_mqtt_client_enqueue(client,
                              "home/garden/alert",
                              payload, 0,
-                             2,   /* QoS 2: exactly once */
-                             0);
+                             2,      /* QoS 2: exactly once */
+                             0, true);
     ESP_LOGW(TAG, "ALERT: Low moisture (%d%%)", moisture_pct);
 }
 ```
@@ -548,6 +551,7 @@ The `s_alert_sent` flag stops the same alert at every reading: after one alert, 
 Two limits of this firmware follow from the code:
 
 - While the broker is not connected, the callback returns at once. Readings taken in that time are not stored and not sent later.
+- The Wi-Fi handler stops after 10 quick tries. A router that is off for a few minutes leaves the monitor offline until it is restarted; the MQTT client's own reconnection cannot help without Wi-Fi. A monitor left alone for weeks needs the growing waits described in the [Wi-Fi lesson](/education/embedded-programming-esp32/wifi-network-configuration/).
 - The alert is sent once. If nobody was subscribed at that moment, nobody receives it. For an alert that matters, a product repeats it until somebody confirms it, or publishes the alert state as a retained message.
 
 ## Subscribing to Commands
@@ -837,10 +841,11 @@ static void publish_moisture(int moisture_pct, int voltage_mv)
              moisture_pct, voltage_mv,
              (long long)(esp_timer_get_time() / 1000000));
 
-    int msg_id = esp_mqtt_client_publish(s_mqtt_client,
+    /* enqueue, not publish: this runs in a timer callback, which must not block */
+    int msg_id = esp_mqtt_client_enqueue(s_mqtt_client,
                                           TOPIC_MOISTURE,
                                           payload, 0,
-                                          1, 0);
+                                          1, 0, true);
     ESP_LOGI(TAG, "Published: moisture=%d%%, voltage=%d mV, msg_id=%d",
              moisture_pct, voltage_mv, msg_id);
 }
@@ -854,8 +859,8 @@ static void publish_alert(int moisture_pct)
              "Water your plant!\"}",
              moisture_pct);
 
-    esp_mqtt_client_publish(s_mqtt_client, TOPIC_ALERT,
-                             payload, 0, 2, 0);
+    esp_mqtt_client_enqueue(s_mqtt_client, TOPIC_ALERT,
+                             payload, 0, 2, 0, true);
     ESP_LOGW(TAG, "ALERT: Low moisture (%d%%)", moisture_pct);
 }
 
@@ -1153,7 +1158,7 @@ The firmware has five parts:
 
 3. The MQTT part sets up TLS, the broker login and the last will. At each connection it publishes "sensor-online" (retained) and subscribes to the config topic.
 
-4. The timer runs every `s_publish_interval_sec` seconds. It reads the sensor, publishes the reading with QoS 1, and decides whether to send the alert with QoS 2.
+4. The timer runs every `s_publish_interval_sec` seconds. It reads the sensor, puts the reading in the outbox with QoS 1 for the MQTT task to send, and decides whether to send the alert with QoS 2.
 
 5. The config part parses the JSON from the config topic, checks `interval` and `threshold`, and restarts the timer.
 
@@ -1324,6 +1329,14 @@ The serial log shows what the device sent. To see what the broker received, conn
 
 6. To test the last will, unplug the ESP32 USB cable. After the broker's keep-alive timeout expires (1.5 times the keep-alive interval, so about 180 seconds with the ESP-MQTT default of 120 seconds), the `home/garden/status` topic changes from "sensor-online" to "sensor-offline".
 </Steps>
+
+### Check it
+
+A message on the broker proves the link, not the measurement. Check both:
+
+1. **The voltage.** Measure GPIO 36 to GND with a multimeter while the log prints a reading. The two should agree within about 50 mV between 150 and 2450 mV, the range in which the ADC is specified. A larger difference means the calibration did not load; a reading of 0 mV with a real voltage on the pin means the conversion failed.
+2. **The percentage.** Put the measured millivolts into the formula by hand: 1770 mV must give 62 percent with the end points of this lesson. Then water the pot: the reading must rise within one interval and fall back slowly over the following days.
+3. **The count.** In MQTT Explorer, count the readings that arrive in 10 minutes at the 60 second interval: 10. Fewer means readings were lost while the client was not connected (the first limit listed under periodic publishing). Time the last will too: from the moment you unplug, it arrives within about 1 to 3 minutes, depending on when the device last sent a packet.
 
 ### Alternative: Phone MQTT Apps
 

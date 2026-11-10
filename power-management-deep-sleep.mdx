@@ -46,7 +46,7 @@ A weather station on batteries that wakes every 5 minutes, reads temperature and
 | Communication | MQTT over Wi-Fi (the broker from the MQTT lesson) |
 | RTC Memory | Message counter, last temperature, last humidity |
 | ULP Program | Monitor GPIO for rain sensor trigger |
-| Estimated Battery Life | About 4 months on 2x AA at a 5 minute interval with fast reconnect, for a bare module |
+| Estimated Battery Life | About 4 months on 2x AA at a 5 minute interval with fast reconnect, for a bare module (about 3 months with the charge the chip can really use) |
 
 ### Bill of Materials
 
@@ -720,6 +720,8 @@ average_current = (2 * 120 + 298 * 0.01) / 300
 
 Battery life: $2500 / 0.81 \approx 3086\ \text{hours} \approx 129\ \text{days}$, or about 4 months. That is more than twice the 48 days of the first budget, at the same 5 minute interval.
 
+The 2500 mAh is not all usable. A fresh pair of alkaline cells gives about 3.2 V, and the voltage falls as they empty and drops for a moment at each 150 mA burst. The ESP32 stops at about 2.3 to 2.4 V (its lowest supply voltage, and the default level of its brownout detector, which resets it), about 1.2 V per cell, while a large part of the charge, often a third, is still in the cells. Plan with about two thirds of the label, 1,670 mAh: about 86 days, not 129. Lithium AA cells, which keep their voltage until nearly empty, or one LiFePO4 cell (3.2 V, inside the 2.3 to 3.6 V range of the chip) use more of their charge. Check also the sensor: the DHT22 is specified from 3.3 V, so on two cells it works below its rated supply.
+
 ## Complete Firmware
 
 <InArticleAd />
@@ -1141,9 +1143,6 @@ static void configure_and_enter_deep_sleep(void)
     esp_sleep_enable_timer_wakeup(
         (uint64_t)DEFAULT_SLEEP_TIME_SEC * 1000000ULL);
 
-    /* ext0 GPIO wake: rain sensor on GPIO 25, wake on LOW */
-    esp_sleep_enable_ext0_wakeup(RAIN_GPIO, 0);
-
     /* Keep RTC peripherals on for GPIO pull-up during sleep */
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
@@ -1152,6 +1151,15 @@ static void configure_and_enter_deep_sleep(void)
     rtc_gpio_set_direction(RAIN_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pullup_en(RAIN_GPIO);
     rtc_gpio_pulldown_dis(RAIN_GPIO);
+
+    /* ext0 GPIO wake: rain sensor on GPIO 25, wake on LOW.
+     * ext0 wakes on a level, not on a change. While it rains the pin
+     * stays low, and the chip would wake again at once, every few
+     * seconds, until the battery is empty. So arm the rain wake only
+     * while the pin is high (dry); during rain the timer alone wakes. */
+    if (rtc_gpio_get_level(RAIN_GPIO) == 1) {
+        esp_sleep_enable_ext0_wakeup(RAIN_GPIO, 0);
+    }
 
     /* Isolate GPIO 12 to prevent flash voltage issue on some modules */
     rtc_gpio_isolate(GPIO_NUM_12);
@@ -1249,7 +1257,7 @@ The firmware runs once from top to bottom at every wake:
 
 4. **Publish by MQTT.** The readings, the boot count, the message count and the wake reason go to the weather topic as JSON, a common text format for data. A retained "online" status follows. The MQTT client is created, used and destroyed inside this one cycle.
 
-5. **Sleep.** Two wake sources are enabled: the 5 minute timer and ext0 on GPIO 25 for the rain sensor. The RTC pull-up is switched on and the chip enters deep sleep.
+5. **Sleep.** Two wake sources are enabled: the 5 minute timer and ext0 on GPIO 25 for the rain sensor. The RTC pull-up is switched on and the chip enters deep sleep. The rain wake is armed only while the pin is high. ext0 reacts to a level, so with the pin held low by rain it would wake the chip again at once, and the node would run its awake cycle without pause; in rain the node reports on the timer.
 
 A cycle takes about 2 to 6 seconds, depending on the kind of Wi-Fi connection. For the rest of the 300 seconds the chip itself draws about 10 uA.
 
@@ -1445,6 +1453,14 @@ On most development boards the chip sleeps at 10 uA while the parts around it dr
 
 A current profiler, such as the Nordic Power Profiler Kit II or the Joulescope, records the current against time. It shows each phase (start, sensor read, Wi-Fi scan, transmit burst, sleep) and so shows a part that does not switch off.
 
+### Check it
+
+Turn the budget into a prediction you can check, then check it:
+
+1. **The awake time.** Read the time stamps in the log: the cold boot above goes to sleep at about 6.6 s, the fast reconnect at about 2 s. Put your own times and your measured sleep current into the budget formula.
+2. **The count.** Over one hour the broker must receive 12 messages, and the `msg_count` field in the payload must rise by 12. A missing message is a failed cycle, and each failed cycle spends its awake charge for nothing.
+3. **The battery.** Write down the battery voltage at the start and once a week. A fall much faster than your budget predicts means a hidden current: a pin that holds a sensor on, a regulator, a node that wakes more often than the timer says (press the rain button and hold it: the node must still sleep between timer wakes).
+
 ## Exercises
 
 <InArticleAd />
@@ -1467,7 +1483,7 @@ A current profiler, such as the Nordic Power Profiler Kit II or the Joulescope, 
 - Waking from deep sleep is a reset. `app_main()` starts from its first line, and only the 8 KB of RTC slow memory keeps its contents. `RTC_DATA_ATTR` and `RTC_NOINIT_ATTR` place counters, last readings and Wi-Fi details there.
 - Several wake sources can be enabled together (timer, ext0, ext1, touch pad, ULP), and `esp_sleep_get_wakeup_cause()` says which one fired. Only RTC GPIOs can wake the chip.
 - The ULP coprocessor watches a pin during deep sleep for an average of only 1 to 2 uA and wakes the main processor when a condition is met.
-- The power budget is the charge of each phase, added and divided by the cycle time. With a bare module, the seconds awake use nearly all of the charge: wake less often and connect faster. A 5 minute interval with the fast connection gives about 4 months on two AA cells.
+- The power budget is the charge of each phase, added and divided by the cycle time. With a bare module, the seconds awake use nearly all of the charge: wake less often and connect faster. A 5 minute interval with the fast connection gives about 4 months on two AA cells on paper, and about 3 months once the brownout limit leaves part of the charge in the cells.
 - A development board draws milliamps while the chip sleeps. Measure the sleep current of what you really power before you trust any estimate.
 
 <EmbeddedProgrammingEsp32Comments />

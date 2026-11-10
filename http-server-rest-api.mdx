@@ -83,7 +83,7 @@ A thermostat with a web page. The ESP32 reads temperature and humidity from a DH
 
 The DHT22 has four pins. With the grille facing you, from left to right: VCC, Data, NC (not connected) and GND. Put the 4.7k resistor between Data and 3.3 V. The sensor and the ESP32 only ever pull this line low, and the resistor pulls it high again. Without it the readings fail.
 
-A relay is a switch moved by an electromagnet (the coil). Most relay modules accept the 3.3 V signal of the ESP32 on the IN pin but need 5 V for the coil. The DevKitC gives 5 V on its VBUS pin when it is powered by USB. If your module has separate VCC and JD-VCC pins, connect VCC to 3.3 V and JD-VCC to 5 V. The output terminals (COM, NO, NC) are the switch contacts.
+A relay is a switch moved by an electromagnet (the coil). Most relay modules accept the 3.3 V signal of the ESP32 on the IN pin but need 5 V for the coil. The DevKitC gives 5 V on its VBUS pin when it is powered by USB. If your module has separate VCC and JD-VCC pins, connect VCC to 3.3 V and JD-VCC to 5 V. On a module with one VCC pin at 5 V, a high of 3.3 V on IN may not switch its input LED fully off: check that the relay really releases when IN is high, before you trust it. The output terminals (COM, NO, NC) are the switch contacts.
 
 :::caution[Test with a low voltage load]
 For this lesson, listen for the click of the relay, or switch an LED with its resistor from a low voltage supply. Connecting a mains heater to the relay is work for a licensed electrician, and a breadboard relay module is not built for it.
@@ -558,11 +558,11 @@ Do not read the DHT22 more often than once every 2 seconds. It needs that time t
 
 ### Critical Section Considerations
 
-The margin is small: a 0 lasts about 27 µs and the code decides at 40 µs. A Wi-Fi interrupt that takes the processor for more than about 13 µs during a 0 makes it measure longer than 40 µs, so it is read as a 1, the checksum fails, and the reading is rejected. This is normal: the sensor task tries again 2 seconds later, and about 9 readings in 10 succeed.
+The margin is small: a 0 lasts about 27 µs and the code decides at 40 µs. Anything that takes the processor for more than about 13 µs during a 0 makes it measure longer than 40 µs, so it is read as a 1, the checksum fails, and the reading is rejected. The sensor task runs on core 1, so the Wi-Fi interrupts on core 0 do not reach it, but the tick interrupt and other tasks that may run on core 1 at the same priority (the HTTP server is not pinned) still can. A failed reading is normal: the sensor task tries again 2 seconds later, and most readings succeed.
 
-You could disable interrupts during the 40 bits with `portDISABLE_INTERRUPTS()`, but that stops Wi-Fi for up to 5 ms at each reading and loses packets. For a device that is also a web server, trying again is the better choice.
+You could turn interrupts off for the 5 ms of the 40 bits with a critical section (`portENTER_CRITICAL()`). On the ESP32 that stops only core 1, and Wi-Fi on core 0 continues; on a one-core chip of the family, such as the ESP32-C3, it would stop Wi-Fi and lose packets. The robust answer is the RMT receiver, which measures the pulse lengths in hardware (see the RMT overview in the [GPIO and peripherals lesson](/education/embedded-programming-esp32/gpio-peripherals-driver-framework/)).
 
-One limit of this firmware: when a reading fails, the relay keeps its last state. If the sensor wire breaks while the heater is on, the heater stays on. A product must count failed readings and switch the heater off after a few, and a heater must always have its own thermal cut-out that does not depend on any software.
+A broken sensor wire must not leave the heater on. The firmware counts failed readings in a row, and after 5 (10 seconds) it marks the temperature as unknown (`NAN`) and, in auto mode, switches the relay off. Until a good reading returns, auto mode holds it off, because every comparison with `NAN` is false. Software is still not enough: a heater must always have its own thermal cut-out that does not depend on any software.
 
 ## Relay Control and Hysteresis
 
@@ -1218,8 +1218,11 @@ static thermostat_state_t state;
 
 static void state_init(void)
 {
-    state.temperature = 0.0f;
-    state.humidity    = 0.0f;
+    /* NAN means "no valid reading yet". Every comparison with NAN is
+       false, so auto mode cannot switch the heater on before the first
+       good reading (0.0 would read as "cold" and switch it on). */
+    state.temperature = NAN;
+    state.humidity    = NAN;
     state.setpoint    = DEFAULT_SETPOINT;
     state.relay_on    = false;
     state.mode        = MODE_AUTO;
@@ -1484,11 +1487,13 @@ static httpd_handle_t start_webserver(void)
 static void sensor_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Sensor task started on core %d", xPortGetCoreID());
+    int failures = 0;   /* failed readings in a row */
 
     while (1) {
         dht_reading_t reading = dht_read();
 
         if (reading.valid) {
+            failures = 0;
             xSemaphoreTake(state.mutex, portMAX_DELAY);
             state.temperature = reading.temperature;
             state.humidity    = reading.humidity;
@@ -1505,6 +1510,16 @@ static void sensor_task(void *pvParameters)
                      mode_to_str(state.mode));
         } else {
             ESP_LOGW(TAG, "DHT read failed, skipping cycle");
+            if (++failures == 5) {   /* 10 s with no good reading */
+                xSemaphoreTake(state.mutex, portMAX_DELAY);
+                state.temperature = NAN;   /* auto mode now holds off */
+                if (state.mode == MODE_AUTO) {
+                    state.relay_on = false;
+                    relay_set(false);
+                }
+                xSemaphoreGive(state.mutex);
+                ESP_LOGE(TAG, "No valid reading for 10 s: heater off");
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(SENSOR_READ_MS));
@@ -1574,7 +1589,7 @@ The firmware has six parts:
 
 5. `start_webserver()` registers four handlers. Three answer the API: they read or change the state under the mutex and reply with JSON. The fourth sends files from SPIFFS.
 
-6. `sensor_task()` runs on core 1, away from the Wi-Fi tasks on core 0. Every 2 seconds it reads the DHT22. After a valid reading it updates the state and runs the thermostat logic.
+6. `sensor_task()` runs on core 1, away from the Wi-Fi tasks on core 0. Every 2 seconds it reads the DHT22. After a valid reading it updates the state and runs the thermostat logic. After 5 failed readings in a row it switches the heater off. Until the first good reading the status reports `"temp": null` (cJSON writes `NAN` as null), and the page shows "--.-".
 
 ## Kconfig Menu
 
@@ -1716,6 +1731,14 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 10. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
+
+### Check it
+
+A thermostat is right when its reading is right and its relay obeys the band. Check three things before you leave it running:
+
+1. **The reading.** Put a second thermometer next to the DHT22 for 10 minutes, away from the ESP32 (the chip warms the air near it). The DHT22 is specified to about ±0.5 °C, so the two should agree within about 1 °C. A larger difference means a poor sensor or a sensor placed in warm air.
+2. **The band.** With the setpoint at 23.0 °C, warm the sensor slowly in your hand and watch the log: the relay must turn off only above 23.5 °C, and on again only below 22.5 °C as it cools. A relay that changes inside the band means the hysteresis is not in effect.
+3. **The failure.** With the relay on in auto mode, pull the data wire. Within about 10 seconds the log must show `No valid reading for 10 s: heater off` and the relay must release. Put the wire back and check that control resumes.
 
 ### Troubleshooting
 

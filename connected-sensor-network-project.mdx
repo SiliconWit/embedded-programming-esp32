@@ -701,6 +701,18 @@ static void check_ota_update(void)
         return;
     }
 
+    /* Never fetch again a version that failed its trial here: it would
+       be downloaded at every wake, every 5 minutes, on battery power. */
+    const esp_partition_t *bad = esp_ota_get_last_invalid_partition();
+    esp_app_desc_t bad_app;
+    if (bad != NULL &&
+        esp_ota_get_partition_description(bad, &bad_app) == ESP_OK &&
+        strcmp(new_app.version, bad_app.version) == 0) {
+        ESP_LOGW(TAG, "Version %s was rolled back before, skipping", new_app.version);
+        esp_https_ota_abort(ota);
+        return;
+    }
+
     ESP_LOGI(TAG, "New firmware %s found, downloading", new_app.version);
     do {
         ret = esp_https_ota_perform(ota);
@@ -752,14 +764,15 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* Mark OTA partition as valid (rollback protection) */
+    /* New firmware after an OTA update starts on trial. It is marked
+       valid only after it has published (below), because a firmware
+       that cannot reach the network can never be repaired. */
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGI(TAG, "First boot after OTA, marking firmware as valid");
-            esp_ota_mark_app_valid_cancel_rollback();
-        }
+    bool on_trial = (esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
+                     ota_state == ESP_OTA_IMG_PENDING_VERIFY);
+    if (on_trial) {
+        ESP_LOGI(TAG, "First boot after OTA: firmware on trial");
     }
 
     /* Subscribe to task watchdog */
@@ -789,6 +802,10 @@ void app_main(void)
 
     /* ── Connect to Wi-Fi ── */
     if (!wifi_connect()) {
+        if (on_trial) {
+            ESP_LOGE(TAG, "New firmware cannot connect: rolling back");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        }
         ESP_LOGE(TAG, "Cannot connect to Wi-Fi, going to sleep");
         enter_deep_sleep();
     }
@@ -834,6 +851,17 @@ void app_main(void)
         ESP_LOGE(TAG, "MQTT connection timed out");
     }
 
+    /* The self-test of new firmware: did this wake reach the broker? */
+    if (on_trial) {
+        if (mqtt_connected) {
+            ESP_LOGI(TAG, "New firmware published: marking it valid");
+            esp_ota_mark_app_valid_cancel_rollback();
+        } else {
+            ESP_LOGE(TAG, "New firmware cannot reach the broker: rolling back");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        }
+    }
+
     esp_mqtt_client_stop(client);
     esp_mqtt_client_destroy(client);
     esp_task_wdt_reset();
@@ -850,7 +878,7 @@ void app_main(void)
 }
 ```
 
-The code runs in a straight line: start, read sensors, connect, publish, check OTA, sleep. It has no tasks of its own, because the node is awake for only a few seconds. The `RTC_DATA_ATTR` variables (`boot_count` and `msg_counter`) keep their values through deep sleep and count the cycles.
+The code runs in a straight line: start, read sensors, connect, publish, check OTA, sleep. It has no tasks of its own, because the node is awake for only a few seconds. On the first wake after an update the new firmware is on trial: it is marked valid only after it has reached the broker, and rolled back at once if Wi-Fi or MQTT fails, because a node on a roof that cannot reach the network can never be repaired. The `RTC_DATA_ATTR` variables (`boot_count` and `msg_counter`) keep their values through deep sleep and count the cycles.
 
 Three choices in this code are worth a second look:
 
@@ -863,7 +891,7 @@ Three choices in this code are worth a second look:
 <InArticleAd />
 
 
-The indoor node needs a driver for the SSD1306 OLED, the chip that controls the display, over I2C. It draws in two stages: it builds the whole picture in a framebuffer (an array in RAM with one bit per pixel), then sends the array to the display in one transfer, so the display never shows a half-drawn picture. The driver also holds a 5x7 pixel font for text.
+The indoor node needs a driver for the SSD1306 OLED, the chip that controls the display, over I2C. It draws in two stages: it builds the whole picture in a framebuffer (an array in RAM with one bit per pixel), then sends the array to the display in one transfer, so the display never shows a half-drawn picture. The driver also holds a 5x7 pixel font for text. It uses the I2C master driver (`driver/i2c_master.h`, with `i2c_new_master_bus()` and `i2c_master_transmit()`), which ESP-IDF has from v5.2; on v5.0 and v5.1 only the older `driver/i2c.h` exists, so build this project with v5.2 or later.
 
 ### How the SSD1306 I2C Protocol Works
 
@@ -1970,6 +1998,7 @@ When you rebuild a project with changes, first raise its version (`set(PROJECT_V
 4. Open a browser and navigate to the indoor node's IP address (shown in the serial log). The web dashboard should display the same values
 5. Wait 5 minutes for the next outdoor node wake cycle. The display should update and the "last update" counter should reset
 6. Test the last will: disconnect the outdoor node's battery during the few seconds it is connected (just after "MQTT connected" appears in its log). After 1.5 times the MQTT keep-alive (about 23 seconds), the status on the display should change from "ON" to "OFF". A battery removed during deep sleep does not trigger the will, because the node disconnected cleanly before sleeping
+7. Check the numbers, not only that they arrive. Measure the battery with a multimeter: the published `home/outdoor/battery` must agree within about 0.1 V. A larger difference comes from the divider (the two resistors differ, or the 100k source is too weak for the ADC to sample; a 100 nF capacitor from GPIO 35 to GND helps). Hold a thermometer beside the DHT22 for 10 minutes: within about 1 °C. Put the soil sensor in a glass of water: close to 100 percent. A value of -999.0 means the DHT22 failed twice in that wake
 </Steps>
 
 ### Testing with MQTT Command-Line Tools
@@ -2016,8 +2045,8 @@ Before you install this system in a real place (a garden, a greenhouse, a roof),
 | Item | Status | Notes |
 |------|--------|-------|
 | Dual OTA partitions | Yes (partition table config) | Factory + OTA_0 + OTA_1 |
-| Rollback on failed boot | Partly (`esp_ota_mark_app_valid_cancel_rollback`) | Firmware that resets before it reaches this call is rolled back. The outdoor node calls it before any test, so add a self-test before real use |
-| Version comparison before OTA | Yes | `esp_https_ota_get_img_desc` reads the version from the image header, and the download continues only if it differs from the running version. Raise `PROJECT_VER` for every release |
+| Rollback on failed boot | Outdoor: yes. Indoor: partly | The outdoor node keeps new firmware on trial until a wake has reached the broker, then calls `esp_ota_mark_app_valid_cancel_rollback()`; if Wi-Fi or MQTT fails it rolls back at once. A router that is off during that first wake also rolls back a good version. The indoor node still marks new firmware valid at start, before any test: move its call into `MQTT_EVENT_CONNECTED` before real use |
+| Version comparison before OTA | Yes | `esp_https_ota_get_img_desc` reads the version from the image header, and the download continues only if it differs from the running version. The outdoor node also skips a version that was rolled back on it (`esp_ota_get_last_invalid_partition()`), so a broken release is not downloaded at every wake. Raise `PROJECT_VER` for every release |
 | OTA over TLS | Configurable | The default is plain `http://` on the local network. For TLS, use an `https://` URL and embed the server certificate |
 
 ### Power and Battery

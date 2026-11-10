@@ -291,6 +291,8 @@ With a baseline of 523, the threshold is 523 × 80 / 100 = 418 (the division dro
 
 Call `touch_calibrate()` about 200 ms after `touch_init()`, once the filter has settled. If the lamp switches with no touch, the threshold is too close to the baseline: lower the percentage to 70. If a real touch is missed, raise it to 85. Do not touch the pad while the board starts, or the baseline includes your finger.
 
+A baseline measured once at boot is enough on a desk. A lamp that runs for months sees the untouched reading drift with temperature and humidity, and a drift of 20 percent reaches the threshold. A product therefore updates the baseline slowly while the pad is not touched, for example `baseline = (baseline * 63 + val) / 64` on each untouched reading.
+
 ### Filtering and Debouncing
 
 Electrical noise can push a reading below the threshold for a moment. The hardware filter (`touch_pad_filter_start()`) smooths the readings. Debouncing is the second defence: a touch counts only after several readings in a row below the threshold, and a release only after several above it. With 3 readings 20 ms apart, a touch is accepted after about 60 ms, which a person does not notice.
@@ -398,7 +400,7 @@ The LED's long leg (anode) goes through the 100 ohm resistor to GPIO18, and its 
 
 The touch pad is a bare wire of 5 to 10 cm, or a piece of copper tape, on GPIO4. It needs no resistor. Keep it away from the USB cable and other signal wires, which add noise to the reading.
 
-The resistor sets the LED current: the 3.3 V of the pin, minus the voltage the LED keeps, divided by 100 ohm. For an LED that keeps about 2 V (red, yellow) this is 1.3 V / 100 ohm = 13 mA, near the 12 mA recommended for continuous use of a pin. A white LED keeps about 3 V, so only about 3 mA flows and it is dim. To drive a white LED hard, or an LED strip, switch it with a MOSFET (a transistor used as a switch): gate to GPIO18 through 100 ohm, strip supplied from 5 V or 12 V.
+The resistor sets the LED current: the 3.3 V of the pin, minus the voltage the LED keeps, divided by 100 ohm. For an LED that keeps about 2 V (red, yellow) this is 1.3 V / 100 ohm = 13 mA, within the pin's default drive strength of about 20 mA. A white LED keeps about 3 V, so only about 3 mA flows and it is dim. To drive a white LED hard, or an LED strip, switch it with a logic-level MOSFET (a transistor used as a switch that turns fully on with 3.3 V at its gate): gate to GPIO18 through 100 ohm, a 100 kohm resistor from gate to GND so that the strip stays off while the chip starts and the pin floats, strip supplied from 5 V or 12 V.
 
 ## Complete Firmware
 
@@ -725,7 +727,7 @@ The helper functions are the pieces you have already seen: NVS load and save, LE
 - A touch shorter than 400 ms switches the lamp. The hardware fade takes 300 ms. When the lamp switches on, it returns to the saved brightness.
 - A touch of 400 ms or longer changes the brightness by 64 duty steps every 30 ms while you hold. The full range of 8191 takes 128 steps, about 3.8 seconds. The direction reverses at the top and bottom of the range, and each time you release.
 
-On every release with the lamp on, the brightness is saved to NVS.
+On every release with the lamp on, the brightness is saved to NVS. Switching off saves nothing, so after a power cut the lamp comes back on at its last brightness, even if it was off before. To restore the off state too, save a second key for on or off.
 
 ## CMakeLists.txt Files
 
@@ -791,6 +793,13 @@ idf_component_register(SRCS "main.c"
 
 7. Press `Ctrl+]` to exit the serial monitor.
 </Steps>
+
+### Check it
+
+"The LED looks right" is not yet a measurement. Two numbers tell you the dimmer works as designed:
+
+1. **The touch margin.** Add one log line in `touch_task` that prints `val` every second, and note the reading with and without your finger. A touch must take the reading well below the threshold (418 for a baseline of 523), not just below it. If the touched reading is only a little below the threshold, the lamp will miss touches on a dry day: make the pad larger or raise the percentage.
+2. **The duty.** Clear any saved value with `idf.py erase-flash`, flash again and switch the lamp on with a short touch, so it starts at the default of 4095 out of 8191. Measure GPIO18 to GND with a multimeter on DC volts: it shows the average, about 0.5 × 3.3 V = 1.65 V (a little less, because the pin drops slightly under load). Near 0 V or 3.3 V means the PWM is not running on that pin.
 
 ### Adjusting Touch Sensitivity
 
