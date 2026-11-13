@@ -167,7 +167,7 @@ void app_main(void)
 }
 ```
 
-Flash it and open the serial monitor: the boot count rises with every wake, 1, 2, 3 and so on. Without `RTC_DATA_ATTR` it would start from 0 every time, because ordinary RAM is lost in deep sleep.
+Flash it and open the serial monitor: the boot count rises with every wake, 1, 2, 3 and so on. Without `RTC_DATA_ATTR` the count would go back to 0 at every wake and the log would show 1, 1, 1, because ordinary RAM is lost in deep sleep.
 
 ## Wake Sources
 
