@@ -1198,7 +1198,7 @@ The phone shows a number; check that it is the number the sensor measured.
 | "GATT Error 0x0E" | The access callback returned `BLE_ATT_ERR_UNLIKELY` (0x0E) | Check the UUID and operation handled in `gatt_access_cb`. The default MTU (23 bytes, 20 of them for the value) is already enough for 2-byte values |
 
 :::tip[Instrument it]
-BLE suits a sensor that must run for months on a small battery and needs to reach only a phone or a gateway nearby: a temperature tag on a cold store door, a vibration tag on a motor. Send the reading as a notification, so that the radio sleeps between updates. A gateway can collect several tags and [forward them onward](/education/iot-systems/) to [siliconwit.io](https://siliconwit.io).
+BLE suits a sensor that must run for months on a small battery and needs to reach only a phone or a gateway nearby: a temperature tag on a cold store door, a vibration tag on a motor. Send the reading as a notification, so that the radio sleeps between updates. A gateway can collect several tags and [forward them onward](/education/iot-systems/) to [a broker you run](/education/iot-systems/mqtt-broker-setup-secure-connection/).
 :::
 
 ## Exercises

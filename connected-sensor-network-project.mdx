@@ -1896,7 +1896,7 @@ The web page reloads itself every 5 seconds with `<meta http-equiv='refresh' con
 
 ### Step 1: Set Up the MQTT Broker
 
-You can use any MQTT broker that supports TLS. [SiliconWit IoT](https://mqtt.siliconwit.io/) provides a broker for course projects, or choose one of these options:
+You can use any MQTT broker that supports TLS: your own Mosquitto (the [broker lesson](/education/iot-systems/mqtt-broker-setup-secure-connection/) of the IoT course sets one up), [SiliconWit.io](https://mqtt.siliconwit.io/), our monitoring service, or one of these options:
 
 **HiveMQ Cloud (free tier):**
 
@@ -2084,7 +2084,7 @@ Before you install this system in a real place (a garden, a greenhouse, a roof),
 | Temperature range | The ESP32 operates from -40 to 85 degrees Celsius. Batteries are the limiting factor; lithium cells perform better in cold weather than alkaline |
 
 :::tip[Instrument it]
-A sensor network is only as good as the places where its nodes sit. Put each node where the quantity you want really is, not where the Wi-Fi is strongest: the temperature node in the air that the equipment takes in, the humidity node away from a vent that dries it. Then make it last in that place: a sealed enclosure with the sensor open to the air, an antenna clear of metal, and a battery budget that matches the reporting rate. If a node later switches a pump or a valve, keep the limits that protect the equipment in the firmware of that node, where they work without a network. The broker and the screen are for oversight, alerts and records. A node placed and housed like this can [report from anywhere](https://siliconwit.io).
+A sensor network is only as good as the places where its nodes sit. Put each node where the quantity you want really is, not where the Wi-Fi is strongest: the temperature node in the air that the equipment takes in, the humidity node away from a vent that dries it. Then make it last in that place: a sealed enclosure with the sensor open to the air, an antenna clear of metal, and a battery budget that matches the reporting rate. If a node later switches a pump or a valve, keep the limits that protect the equipment in the firmware of that node, where they work without a network. The broker and the screen are for oversight, alerts and records. A node placed and housed like this can report from anywhere, to a broker you run or to [siliconwit.io](https://siliconwit.io); it works with any MQTT client.
 :::
 
 ## Exercises

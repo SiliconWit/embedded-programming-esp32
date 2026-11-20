@@ -1751,7 +1751,7 @@ A thermostat is right when its reading is right and its relay obeys the band. Ch
 | Relay chatters rapidly | Increase `HYSTERESIS` from 0.5 to 1.0. If the sensor readings are noisy, add a software moving average filter. |
 
 :::tip[Instrument it]
-A device with its own REST API can be watched with no cloud at all: a browser on the local network reads the live values and changes a setpoint. That suits a machine on a closed factory network or a site with no internet. The device keeps control and its limits in its own firmware, and the network is only a way to see and to adjust. Give the readings and the settings clear addresses, and the device is ready to [join a wider system](/education/iot-systems/) such as [siliconwit.io](https://siliconwit.io) later, for records and alerts across sites.
+A device with its own REST API can be watched with no cloud at all: a browser on the local network reads the live values and changes a setpoint. That suits a machine on a closed factory network or a site with no internet. The device keeps control and its limits in its own firmware, and the network is only a way to see and to adjust. Give the readings and the settings clear addresses, and the device is ready to [join a wider system](/education/iot-systems/) later, such as a broker you run, for records and alerts across sites.
 :::
 
 ## Exercises

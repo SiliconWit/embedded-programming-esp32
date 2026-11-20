@@ -162,7 +162,7 @@ You need a broker that both the ESP32 and your phone can reach over the internet
 5. The free tier supports up to 100 connections and 10 GB of traffic per month, which is more than enough for development and small deployments.
 </Steps>
 
-**Alternatives:** [SiliconWit.io](https://mqtt.siliconwit.io/) also accepts MQTT over TLS from devices, but with its own topic names (telemetry on `d/<device id>/t`), so the topics of this lesson must be changed to use it. EMQX Cloud ([www.emqx.com/en/cloud](https://www.emqx.com/en/cloud)) offers a similar free tier. The ESP-IDF code in this lesson works with any standard MQTT broker.
+**Alternatives:** [SiliconWit.io](https://mqtt.siliconwit.io/), our monitoring service, also accepts MQTT over TLS from devices, but with its own topic names (telemetry on `d/<device id>/t`), so the topics of this lesson must be changed to use it. EMQX Cloud ([www.emqx.com/en/cloud](https://www.emqx.com/en/cloud)) offers a similar free tier. The ESP-IDF code in this lesson works with any standard MQTT broker.
 
 ## ESP-MQTT Client Basics
 
@@ -1343,7 +1343,7 @@ A message on the broker proves the link, not the measurement. Check both:
 To test from a phone, install a free MQTT app: IoT MQTT Panel or MQTT Dashboard on Android, MQTTool or EasyMQTT on iOS. Connect to the same broker with the same login, subscribe to `home/garden/#` to see every message of the sensor, and publish to `home/garden/config` to change the settings. In IoT MQTT Panel you can add a gauge for `home/garden/moisture` that reads the `moisture` field.
 
 :::tip[Instrument it]
-Publish the value that matters (a temperature, a vibration level, an event) and not every raw sample. Give topics a clear order such as `site/machine/metric`, retain the last status so that a new client sees it at once, and set a last will so that a missing device is noticed. A platform such as [siliconwit.io](https://siliconwit.io) follows the same pattern: a device publishes its telemetry on `d/<id>/t` and receives commands on `d/<id>/c`. The platform is for records, alerts and comparing sites. Limits that protect a machine stay in the device's own firmware.
+Publish the value that matters (a temperature, a vibration level, an event) and not every raw sample. Give topics a clear order such as `site/machine/metric`, retain the last status so that a new client sees it at once, and set a last will so that a missing device is noticed. Send these messages to a broker you run, or to [siliconwit.io](https://siliconwit.io), which follows the same pattern: telemetry on `d/<id>/t`, commands on `d/<id>/c`. Either one is for records, alerts and comparing sites. Limits that protect a machine stay in the device's own firmware.
 :::
 
 ## Exercises
